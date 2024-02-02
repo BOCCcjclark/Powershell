@@ -19,3 +19,5 @@ $RealtekDriver = Get-WmiObject Win32_PnPSignedDriver | Where-Object { $_.Friendl
 				Write-Host "Driver is already updated"
 				}
 }
+
+Restart-Computer -Force
