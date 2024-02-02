@@ -19,5 +19,6 @@ $RealtekDriver = Get-WmiObject Win32_PnPSignedDriver | Where-Object { $_.Friendl
 				Write-Host "Driver is already updated"
 				}
 }
-
+$device = Get-PnpDevice | Where-Object {$_.FriendlyName -eq "Speakers (Realtek(R) Audio)"}
+Disable-PnpDevice -InstanceId $device.InstanceId -Confirm:$false
 Restart-Computer -Force
