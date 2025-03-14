@@ -119,11 +119,11 @@ function Test-VMUpgradeEligibility {
         }
     }
     
-    if ($memoryGB -lt 2) {
+    if ($memoryGB -lt 4) {
         Write-Log "VM $($VM.Name) has insufficient memory: $memoryGB GB" -Level Warning
         return @{
             Eligible = $false
-            Reason = "Insufficient memory (minimum 2GB required)"
+            Reason = "Insufficient memory (minimum 4GB required)"
             UpgradePath = "None"
             UpgradeSteps = @()
             RequiredISOs = @()
