@@ -4,7 +4,7 @@
 
 #region Configuration Parameters
 # Update these parameters as needed
-$vCenterServer = "your-vcenter-server.domain.com"
+$vCenterServer = "https://lc1pvm-vcenter.lee-county-fl.gov/"
 
 # ISO paths for different Windows Server versions
 $isoPathCollection = @{
@@ -674,7 +674,7 @@ Import-Module VMware.PowerCLI
 # Connect to vCenter
 try {
     Write-Log "Connecting to vCenter: $vCenterServer" -Level Info
-    Connect-VIServer -Server $vCenterServer -ErrorAction Stop
+    Connect-VIServer -Server $vCenterServer -Protocol HTTPS -ErrorAction Stop -Force
     Write-Log "Connected to vCenter successfully" -Level Info
 }
 catch {
