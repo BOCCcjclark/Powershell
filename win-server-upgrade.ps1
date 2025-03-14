@@ -5,7 +5,11 @@
 #region Configuration Parameters
 # Update these parameters as needed
 $vCenterServer = "your-vcenter-server.domain.com"
-$iso_path = "path\to\WindowsServer2022.iso"
+#We will need a few ISO paths, one each for the intermediate upgrade steps
+# For example, if upgrading from 2008 to 2012R2, then to 2019, and finally to 2022
+$iso_path_2008_to_2012 = "path\to\WindowsServer2012.iso"
+$iso_path_2012_to_2019 = "path\to\WindowsServer2019.iso"
+$iso_path_2019_to_2022 = "path\to\WindowsServer2022.iso"
 $backupLocation = "\\your-backup-server\backups"
 $logFile = "C:\Logs\ServerUpgrade_$(Get-Date -Format 'yyyyMMdd_HHmmss').log"
 $upgradeReport = "C:\Logs\UpgradeReport_$(Get-Date -Format 'yyyyMMdd').csv"
