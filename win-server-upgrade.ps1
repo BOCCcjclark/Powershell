@@ -1,5 +1,7 @@
 
 
+#requires VMware.PowerCLI
+
 # Windows Server Upgrade Script
 # This script helps upgrade Windows Server 2003, 2008, 2008 R2, 2012, 2012R2, 2016, and 2019 VMs to Windows Server 2022
 # Prerequisites: PowerCLI module, administrative access to vCenter, Windows Server ISOs for intermediate upgrades
