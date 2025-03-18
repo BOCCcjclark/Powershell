@@ -1,18 +1,97 @@
-# Windows Server Upgrade Script
+function Test-ContentLibraryISOAvailability {
+    param (
+        [Parameter(Mandatory=$true)]
+        [string]$Version,
+        
+        [Parameter(Mandatory=$false)]
+        [switch]$Detailed
+    )
+    
+    $isoPattern = "*$($isoNameCollection[$Version])*"
+    $contentLib = Get-ContentLibrary -Name $contentLibraryName
+    $isoItems = Get-ContentLibraryItem -ContentLibrary $contentLib | Where-Object { $_.Name -like $isoPattern -and $_.ContentType -eq "iso" }
+    
+    if ($Detailed) {
+        return @{
+            Available = ($isoItems.Count -gt 0)
+            Items = $isoItems
+            ItemCount = $isoItems.Count
+            Pattern = $isoPattern
+        }
+    }
+    
+    return ($isoItems.Count -gt 0)
+}
+
+function Map-UpgradePathToLibraryItems {
+    param (
+        [Parameter(Mandatory=$true)]
+        [hashtable]$UpgradeInfo
+    )
+    
+    $result = @{
+        AllAvailable = $true
+        MissingISOs = @()
+        FoundISOs = @()
+        UpgradeInfo = $UpgradeInfo
+    }
+    
+    foreach ($step in $UpgradeInfo.RequiredISOs) {
+        $isoCheck = Test-ContentLibraryISOAvailability -Version $step -Detailed
+        
+        if ($isoCheck.Available) {
+            $result.FoundISOs += @{
+                Step = $step
+                Pattern = $isoCheck.Pattern
+                ISO = $isoCheck.Items[0].Name
+            }
+        }
+        else {
+            $result.AllAvailable = $false
+            $result.MissingISOs += $step
+        }
+    }
+    
+    return $result
+}# Display information about Content Library and ISOs
+Write-Host "`nContent Library Information:" -ForegroundColor Cyan
+$contentLib = Get-ContentLibrary -Name $contentLibraryName
+Write-Host "  Name: $($contentLib.Name)" -ForegroundColor White
+Write-Host "  Description: $($contentLib.Description)" -ForegroundColor White
+Write-Host "  Type: $($contentLib.Type)" -ForegroundColor White
+
+$isoItems = Get-ContentLibraryItem -ContentLibrary $contentLib | Where-Object { $_.ContentType -eq "iso" }
+Write-Host "`nAvailable ISO Files:" -ForegroundColor Cyan
+$isoItems | Format-Table -Property Name, ContentVersion, LastModified# Check if PowerCLI module is installed
+if (-not (Get-Module -Name VMware.PowerCLI -ListAvailable)) {
+    Write-Log "VMware PowerCLI module not found. Installing..." -Level Warning
+    Install-Module -Name VMware.PowerCLI -Scope CurrentUser -Force
+}
+
+# Import PowerCLI module
+Import-Module VMware.PowerCLI
+
+# Set PowerCLI configuration
+Write-Log "Configuring PowerCLI settings..." -Level Info
+Set-PowerCLIConfiguration -InvalidCertificateAction Ignore -Confirm:$false | Out-Null
+Set-PowerCLIConfiguration -DefaultVIServerMode Multiple -Confirm:$false | Out-Null# Windows Server Upgrade Script
 # This script helps upgrade Windows Server 2003, 2008, 2008 R2, 2012, 2012R2, 2016, and 2019 VMs to Windows Server 2022
 # Prerequisites: PowerCLI module, administrative access to vCenter, Windows Server ISOs for intermediate upgrades
 
 #region Configuration Parameters
 # Update these parameters as needed
-$vCenterServer = "https://lc1pvm-vcenter.lee-county-fl.gov/"
+$vCenterServer = "your-vcenter-server.domain.com"
 
-# ISO paths for different Windows Server versions
-$isoPathCollection = @{
-    "2008" = "path\to\WindowsServer2008R2.iso"
-    "2012" = "path\to\WindowsServer2012R2.iso"
-    "2016" = "path\to\WindowsServer2016.iso"
-    "2019" = "path\to\WindowsServer2019.iso"
-    "2022" = "path\to\WindowsServer2022.iso"
+# Content Library name where Windows Server ISOs are stored
+$contentLibraryName = "OS-Images"
+
+# ISO item names in the Content Library (adjust as needed)
+$isoNameCollection = @{
+    "2008" = "WindowsServer2008R2"
+    "2012" = "WindowsServer2012R2"
+    "2016" = "WindowsServer2016"
+    "2019" = "WindowsServer2019"
+    "2022" = "WindowsServer2022"
 }
 
 # Backup and log locations
@@ -119,11 +198,11 @@ function Test-VMUpgradeEligibility {
         }
     }
     
-    if ($memoryGB -lt 4) {
+    if ($memoryGB -lt 2) {
         Write-Log "VM $($VM.Name) has insufficient memory: $memoryGB GB" -Level Warning
         return @{
             Eligible = $false
-            Reason = "Insufficient memory (minimum 4GB required)"
+            Reason = "Insufficient memory (minimum 2GB required)"
             UpgradePath = "None"
             UpgradeSteps = @()
             RequiredISOs = @()
@@ -277,24 +356,39 @@ function Mount-UpgradeISO {
         $isoVersion = "20$isoVersion"
     }
     
-    # Get the ISO path from the collection
+    # Get the ISO name from the collection
     $isoKey = $TargetVersion
-    if ($isoPathCollection.ContainsKey($isoKey)) {
-        $isoPath = $isoPathCollection[$isoKey]
+    if ($isoNameCollection.ContainsKey($isoKey)) {
+        $isoName = $isoNameCollection[$isoKey]
     }
     else {
-        Write-Log "No ISO path defined for Windows Server $TargetVersion" -Level Error
+        Write-Log "No ISO name defined for Windows Server $TargetVersion" -Level Error
         return $false
     }
     
-    Write-Log "Mounting Windows Server $TargetVersion ISO to VM: $($VM.Name)" -Level Info
+    Write-Log "Attempting to mount Windows Server $TargetVersion ISO from Content Library to VM: $($VM.Name)" -Level Info
     
     try {
-        # Verify ISO file exists
-        if (-not (Test-Path $isoPath)) {
-            Write-Log "ISO file not found: $isoPath" -Level Error
+        # Get the Content Library
+        $contentLibrary = Get-ContentLibrary -Name $contentLibraryName -ErrorAction Stop
+        if (-not $contentLibrary) {
+            Write-Log "Content Library '$contentLibraryName' not found" -Level Error
             return $false
         }
+        
+        # Find the ISO item in the Content Library
+        $contentItems = Get-ContentLibraryItem -ContentLibrary $contentLibrary | Where-Object { 
+            $_.Name -like "*$isoName*" -and $_.ContentType -eq "iso" 
+        }
+        
+        if (-not $contentItems) {
+            Write-Log "Could not find ISO for Windows Server $TargetVersion in Content Library" -Level Error
+            return $false
+        }
+        
+        # If multiple matches, use the most specific one
+        $contentItem = $contentItems | Sort-Object -Property Name -Descending | Select-Object -First 1
+        Write-Log "Found ISO in Content Library: $($contentItem.Name)" -Level Info
         
         # Get CD drive
         $cdDrive = Get-CDDrive -VM $VM
@@ -305,13 +399,13 @@ function Mount-UpgradeISO {
             Set-CDDrive -CD $cdDrive -NoMedia -Confirm:$false
         }
         
-        # Mount ISO
-        Set-CDDrive -CD $cdDrive -IsoPath $isoPath -Connected $true -Confirm:$false
+        # Mount ISO from Content Library
+        Set-CDDrive -CD $cdDrive -ContentLibraryIso $contentItem -StartConnected $true -Confirm:$false
         
         # Verify mounting was successful
         $cdDrive = Get-CDDrive -VM $VM
-        if ($cdDrive.IsoPath -eq $isoPath -and $cdDrive.ConnectionState.Connected) {
-            Write-Log "ISO mounted successfully: $isoPath" -Level Info
+        if ($cdDrive.ConnectionState.Connected) {
+            Write-Log "ISO mounted successfully from Content Library: $($contentItem.Name)" -Level Info
             return $true
         }
         else {
@@ -662,19 +756,78 @@ if (-not (Test-Path -Path $logDir)) {
 Write-Log "Starting Windows Server upgrade script" -Level Info
 Write-Log "Script configuration: vCenter=$vCenterServer, ISO=$iso_path" -Level Info
 
-# Check if PowerCLI module is installed
-if (-not (Get-Module -Name VMware.PowerCLI -ListAvailable)) {
-    Write-Log "VMware PowerCLI module not found. Installing..." -Level Warning
-    Install-Module -Name VMware.PowerCLI -Scope CurrentUser -Force
+# Check if Content Library is available
+try {
+    if (-not (Get-ContentLibrary -Name $contentLibraryName -ErrorAction SilentlyContinue)) {
+        Write-Log "Content Library '$contentLibraryName' not found. Please verify the name." -Level Error
+        
+        # List available content libraries
+        $availableLibraries = Get-ContentLibrary
+        Write-Log "Available Content Libraries: $($availableLibraries.Name -join ', ')" -Level Info
+        
+        Write-Host "Content Library '$contentLibraryName' not found." -ForegroundColor Red
+        Write-Host "Available libraries:" -ForegroundColor Yellow
+        $availableLibraries | Format-Table -Property Name, Description
+        
+        $useNewLibrary = Read-Host "Enter name of Content Library to use (leave empty to exit)"
+        
+        if ([string]::IsNullOrEmpty($useNewLibrary)) {
+            Write-Log "Script execution cancelled - no valid Content Library" -Level Error
+            exit 1
+        }
+        
+        if (-not (Get-ContentLibrary -Name $useNewLibrary -ErrorAction SilentlyContinue)) {
+            Write-Log "Content Library '$useNewLibrary' not found. Exiting." -Level Error
+            exit 1
+        }
+        
+        $contentLibraryName = $useNewLibrary
+        Write-Log "Using Content Library: $contentLibraryName" -Level Info
+    }
+    
+    # Verify ISO items in Content Library
+    $contentLib = Get-ContentLibrary -Name $contentLibraryName
+    $availableISOItems = Get-ContentLibraryItem -ContentLibrary $contentLib | Where-Object { $_.ContentType -eq "iso" }
+    
+    Write-Log "Found $($availableISOItems.Count) ISO items in Content Library" -Level Info
+    
+    # Check for each required ISO
+    $missingIsos = @()
+    foreach ($version in $isoNameCollection.Keys) {
+        $isoPattern = "*$($isoNameCollection[$version])*"
+        $iso = $availableISOItems | Where-Object { $_.Name -like $isoPattern }
+        
+        if (-not $iso) {
+            $missingIsos += "Windows Server $version ($($isoNameCollection[$version]))"
+        }
+    }
+    
+    if ($missingIsos.Count -gt 0) {
+        Write-Log "Warning: Missing ISOs in Content Library: $($missingIsos -join ', ')" -Level Warning
+        Write-Host "Warning: The following required ISOs appear to be missing from Content Library:" -ForegroundColor Yellow
+        foreach ($missing in $missingIsos) {
+            Write-Host "  - $missing" -ForegroundColor Yellow
+        }
+        
+        Write-Host "Available ISOs in Content Library:" -ForegroundColor Cyan
+        $availableISOItems | Format-Table -Property Name
+        
+        $continue = Read-Host "Continue anyway? (Y/N)"
+        if ($continue -ne "Y" -and $continue -ne "y") {
+            Write-Log "Script execution cancelled - missing required ISOs" -Level Error
+            exit 1
+        }
+    }
 }
-
-# Import PowerCLI module
-Import-Module VMware.PowerCLI
+catch {
+    Write-Log "Error checking Content Library: $_" -Level Error
+    exit 1
+}
 
 # Connect to vCenter
 try {
     Write-Log "Connecting to vCenter: $vCenterServer" -Level Info
-    Connect-VIServer -Server $vCenterServer -Protocol HTTPS -ErrorAction Stop -Force
+    Connect-VIServer -Server $vCenterServer -ErrorAction Stop
     Write-Log "Connected to vCenter successfully" -Level Info
 }
 catch {
@@ -746,6 +899,13 @@ function Start-UpgradeSequence {
                 if (-not $waitResult) {
                     Write-Log "Timeout waiting for upgrades to complete" -Level Error
                 }
+                
+                # Show progress after waiting
+                if ($results.Count -gt 0) {
+                    $progressTable = Monitor-UpgradeProgress -UpgradeResults $results
+                    Write-Host "`nCurrent Upgrade Progress:" -ForegroundColor Cyan
+                    $progressTable | Format-Table -Property VMName, CurrentOS, Status, ProgressPercentage, ElapsedTime
+                }
             }
             
             # Create backup
@@ -815,6 +975,13 @@ function Start-UpgradeSequence {
         
         # Add result to array
         $results += $result
+        
+        # Display progress after each VM is processed
+        if ($results.Count -gt 0 -and $results.Count % 3 -eq 0) {
+            $progressTable = Monitor-UpgradeProgress -UpgradeResults $results
+            Write-Host "`nIntermediate Upgrade Progress:" -ForegroundColor Cyan
+            $progressTable | Format-Table -Property VMName, CurrentOS, Status, ProgressPercentage, ElapsedTime
+        }
     }
     
     # If in batch mode, wait for all upgrades to complete
@@ -964,6 +1131,28 @@ function Wait-ForUpgradeCompletion {
         
         if ($RunningUpgrades.Count -gt 0) {
             Write-Log "Still waiting for $($RunningUpgrades.Count) upgrades to complete..." -Level Info
+            
+            # Display current progress
+            Write-Host "`nCurrent Upgrade Status:" -ForegroundColor Cyan
+            $currentProgress = [System.Collections.ArrayList]@()
+            
+            foreach ($vmName in $RunningUpgrades.Keys) {
+                $vmInfo = $RunningUpgrades[$vmName]
+                $elapsedTime = (Get-Date) - $vmInfo.StartTime
+                
+                $progressItem = [PSCustomObject]@{
+                    VMName = $vmName
+                    CurrentOS = $vmInfo.VM.Guest.OSFullName
+                    Upgrading = "From $($vmInfo.CurrentStep) to $($vmInfo.NextStep)"
+                    ElapsedTime = "$([math]::Round($elapsedTime.TotalMinutes, 0)) minutes"
+                    Status = "In Progress"
+                }
+                
+                $currentProgress.Add($progressItem) | Out-Null
+            }
+            
+            $currentProgress | Format-Table -AutoSize
+            
             Start-Sleep -Seconds ($statusCheckInterval * 60)
         }
         
@@ -1041,13 +1230,32 @@ foreach ($vm in $windowsVMs) {
     $eligibility = Test-VMUpgradeEligibility -VM $vm
     
     if ($eligibility.Eligible) {
+        # Check if all required ISOs are available in Content Library
+        $isoAvailability = Map-UpgradePathToLibraryItems -UpgradeInfo $eligibility
+        
         $filteredVMs += $vm
         
-        # Display upgrade path
+        # Display upgrade path and ISO availability
         Write-Host "VM: $($vm.Name)" -ForegroundColor Cyan
         Write-Host "  Current OS: $($vm.Guest.OSFullName)" -ForegroundColor Gray
         Write-Host "  Upgrade Path: $($eligibility.UpgradePath)" -ForegroundColor Gray
-        Write-Host "  Required ISOs: $($eligibility.RequiredISOs -join ', ')" -ForegroundColor Gray
+        
+        if ($isoAvailability.AllAvailable) {
+            Write-Host "  ISO Status: All required ISOs available in Content Library" -ForegroundColor Green
+            foreach ($iso in $isoAvailability.FoundISOs) {
+                Write-Host "    - Windows Server $($iso.Step): $($iso.ISO)" -ForegroundColor Green
+            }
+        }
+        else {
+            Write-Host "  ISO Status: Some required ISOs are missing from Content Library" -ForegroundColor Red
+            foreach ($iso in $isoAvailability.FoundISOs) {
+                Write-Host "    - Windows Server $($iso.Step): $($iso.ISO)" -ForegroundColor Green
+            }
+            foreach ($missing in $isoAvailability.MissingISOs) {
+                Write-Host "    - Windows Server $missing: NOT FOUND" -ForegroundColor Red
+            }
+        }
+        
         Write-Host ""
     }
     else {
@@ -1066,6 +1274,14 @@ if ($confirmation -ne "Y" -and $confirmation -ne "y") {
 
 # Start the upgrade sequence
 $upgradeResults = Start-UpgradeSequence -VirtualMachines $filteredVMs -BatchMode:$useBatchMode -Credential $commonCreds
+
+# Display upgrade progress summary
+$progressTable = Monitor-UpgradeProgress -UpgradeResults $upgradeResults
+Write-Host "`nUpgrade Progress Summary:" -ForegroundColor Cyan
+$progressTable | Format-Table -Property VMName, CurrentOS, Status, ProgressPercentage, ElapsedTime
+
+# Generate final report
+$summary = Generate-UpgradeReport -UpgradeResults $upgradeResults
 
 # Generate report
 $summary = Generate-UpgradeReport -UpgradeResults $upgradeResults
