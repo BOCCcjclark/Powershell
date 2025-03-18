@@ -1,3 +1,73 @@
+
+
+# Windows Server Upgrade Script
+# This script helps upgrade Windows Server 2003, 2008, 2008 R2, 2012, 2012R2, 2016, and 2019 VMs to Windows Server 2022
+# Prerequisites: PowerCLI module, administrative access to vCenter, Windows Server ISOs for intermediate upgrades
+# Import PowerCLI module
+Import-Module VMware.PowerCLI
+
+# Set PowerCLI configuration
+Write-Log "Configuring PowerCLI settings..." -Level Info
+Set-PowerCLIConfiguration -InvalidCertificateAction Ignore -Confirm:$false | Out-Null
+Set-PowerCLIConfiguration -DefaultVIServerMode Multiple -Confirm:$false | Out-Null
+
+
+#region Configuration Parameters
+# Update these parameters as needed
+$vCenterServer = "your-vcenter-server.domain.com"
+
+# Content Library name where Windows Server ISOs are stored
+$contentLibraryName = "OS-Images"
+
+# ISO item names in the Content Library (adjust as needed)
+$isoNameCollection = @{
+    "2008" = "WindowsServer2008R2"
+    "2012" = "WindowsServer2012R2"
+    "2016" = "WindowsServer2016"
+    "2019" = "WindowsServer2019"
+    "2022" = "WindowsServer2022"
+}
+
+# Backup and log locations
+$backupLocation = "\\your-backup-server\backups"
+$logFile = "C:\Logs\ServerUpgrade_$(Get-Date -Format 'yyyyMMdd_HHmmss').log"
+$upgradeReport = "C:\Logs\UpgradeReport_$(Get-Date -Format 'yyyyMMdd').csv"
+
+# Credentials store - for batch processing
+$credentialStore = @{}
+
+# Maximum number of concurrent upgrades (adjust based on your environment capacity)
+$maxConcurrentUpgrades = 5
+
+# Wait time in minutes between upgrade status checks
+$statusCheckInterval = 15
+#endregion
+
+#region Functions
+function Write-Log {
+    param (
+        [Parameter(Mandatory=$true)]
+        [string]$Message,
+        
+        [Parameter(Mandatory=$false)]
+        [ValidateSet('Info','Warning','Error')]
+        [string]$Level = 'Info'
+    )
+    
+    $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+    $logMessage = "[$timestamp] [$Level] $Message"
+    
+    # Output to console with color coding
+    switch ($Level) {
+        'Info'    { Write-Host $logMessage -ForegroundColor Cyan }
+        'Warning' { Write-Host $logMessage -ForegroundColor Yellow }
+        'Error'   { Write-Host $logMessage -ForegroundColor Red }
+    }
+    
+    # Write to log file
+    Add-Content -Path $logFile -Value $logMessage
+}
+
 function Test-ContentLibraryISOAvailability {
     param (
         [Parameter(Mandatory=$true)]
@@ -68,71 +138,6 @@ if (-not (Get-Module -Name VMware.PowerCLI -ListAvailable)) {
     Install-Module -Name VMware.PowerCLI -Scope CurrentUser -Force
 }
 
-# Import PowerCLI module
-Import-Module VMware.PowerCLI
-
-# Set PowerCLI configuration
-Write-Log "Configuring PowerCLI settings..." -Level Info
-Set-PowerCLIConfiguration -InvalidCertificateAction Ignore -Confirm:$false | Out-Null
-Set-PowerCLIConfiguration -DefaultVIServerMode Multiple -Confirm:$false | Out-Null# Windows Server Upgrade Script
-# This script helps upgrade Windows Server 2003, 2008, 2008 R2, 2012, 2012R2, 2016, and 2019 VMs to Windows Server 2022
-# Prerequisites: PowerCLI module, administrative access to vCenter, Windows Server ISOs for intermediate upgrades
-
-#region Configuration Parameters
-# Update these parameters as needed
-$vCenterServer = "your-vcenter-server.domain.com"
-
-# Content Library name where Windows Server ISOs are stored
-$contentLibraryName = "OS-Images"
-
-# ISO item names in the Content Library (adjust as needed)
-$isoNameCollection = @{
-    "2008" = "WindowsServer2008R2"
-    "2012" = "WindowsServer2012R2"
-    "2016" = "WindowsServer2016"
-    "2019" = "WindowsServer2019"
-    "2022" = "WindowsServer2022"
-}
-
-# Backup and log locations
-$backupLocation = "\\your-backup-server\backups"
-$logFile = "C:\Logs\ServerUpgrade_$(Get-Date -Format 'yyyyMMdd_HHmmss').log"
-$upgradeReport = "C:\Logs\UpgradeReport_$(Get-Date -Format 'yyyyMMdd').csv"
-
-# Credentials store - for batch processing
-$credentialStore = @{}
-
-# Maximum number of concurrent upgrades (adjust based on your environment capacity)
-$maxConcurrentUpgrades = 5
-
-# Wait time in minutes between upgrade status checks
-$statusCheckInterval = 15
-#endregion
-
-#region Functions
-function Write-Log {
-    param (
-        [Parameter(Mandatory=$true)]
-        [string]$Message,
-        
-        [Parameter(Mandatory=$false)]
-        [ValidateSet('Info','Warning','Error')]
-        [string]$Level = 'Info'
-    )
-    
-    $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
-    $logMessage = "[$timestamp] [$Level] $Message"
-    
-    # Output to console with color coding
-    switch ($Level) {
-        'Info'    { Write-Host $logMessage -ForegroundColor Cyan }
-        'Warning' { Write-Host $logMessage -ForegroundColor Yellow }
-        'Error'   { Write-Host $logMessage -ForegroundColor Red }
-    }
-    
-    # Write to log file
-    Add-Content -Path $logFile -Value $logMessage
-}
 
 function Test-VMUpgradeEligibility {
     param (
