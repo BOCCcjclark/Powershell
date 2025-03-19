@@ -1,6 +1,6 @@
 
 
-#requires VMware.PowerCLI
+#requires -Modules VMware.PowerCLI
 
 # Windows Server Upgrade Script
 # This script helps upgrade Windows Server 2003, 2008, 2008 R2, 2012, 2012R2, 2016, and 2019 VMs to Windows Server 2022
@@ -9,13 +9,13 @@
 Import-Module VMware.PowerCLI
 
 # Set PowerCLI configuration
-Write-Log "Configuring PowerCLI settings..." -Level Info
 Set-PowerCLIConfiguration -InvalidCertificateAction Ignore -Confirm:$false | Out-Null
 Set-PowerCLIConfiguration -DefaultVIServerMode Multiple -Confirm:$false | Out-Null
 
 
+
 #region Configuration Parameters
-$vCenterServer = "https://lc1pvm-vcenter.lee-county-fl.gov/"
+$vCenterServer = "lc1pvm-vcenter.lee-county-fl.gov"
 
 # Content Library name where Windows Server ISOs are stored
 $contentLibraryName = "ISO's And Admin Tools"
@@ -69,6 +69,17 @@ function Write-Log {
     Add-Content -Path $logFile -Value $logMessage
 }
 
+# Connect to vCenter
+try {
+    Write-Log "Connecting to vCenter: $vCenterServer" -Level Info
+    Connect-VIServer -Server $vCenterServer -ErrorAction Stop
+    Write-Log "Connected to vCenter successfully" -Level Info
+}
+catch {
+    Write-Log "Failed to connect to vCenter: $_" -Level Error
+    exit 1
+}
+
 function Test-ContentLibraryISOAvailability {
     param (
         [Parameter(Mandatory=$true)]
@@ -78,9 +89,23 @@ function Test-ContentLibraryISOAvailability {
         [switch]$Detailed
     )
     
-    $isoPattern = "*$($isoNameCollection[$Version])*"
+    # Get the base pattern for this version
+    $isoPattern = $isoNameCollection[$Version]
     $contentLib = Get-ContentLibrary -Name $contentLibraryName
-    $isoItems = Get-ContentLibraryItem -ContentLibrary $contentLib | Where-Object { $_.Name -like $isoPattern -and $_.ContentType -eq "iso" }
+    
+    # Include both normal and R2 patterns in search
+    $isoItems = Get-ContentLibraryItem -ContentLibrary $contentLib | Where-Object { 
+        ($_.Name -like "*$isoPattern*" -or $_.Name -like "*$isoPattern R2*") -and 
+        $_.ItemType -eq "iso" 
+    }
+    
+    # If R2 version is specifically needed, filter for those items
+    if ($Version -eq "2008" -or $Version -eq "2012") {
+        $r2Items = $isoItems | Where-Object { $_.Name -like "*R2*" }
+        if ($r2Items.Count -gt 0) {
+            $isoItems = $r2Items
+        }
+    }
     
     if ($Detailed) {
         return @{
@@ -124,21 +149,18 @@ function Map-UpgradePathToLibraryItems {
     }
     
     return $result
-}# Display information about Content Library and ISOs
+}
+
+# Display information about Content Library and ISOs
 Write-Host "`nContent Library Information:" -ForegroundColor Cyan
 $contentLib = Get-ContentLibrary -Name $contentLibraryName
 Write-Host "  Name: $($contentLib.Name)" -ForegroundColor White
 Write-Host "  Description: $($contentLib.Description)" -ForegroundColor White
 Write-Host "  Type: $($contentLib.Type)" -ForegroundColor White
 
-$isoItems = Get-ContentLibraryItem -ContentLibrary $contentLib | Where-Object { $_.ContentType -eq "iso" }
+$isoItems = Get-ContentLibraryItem -ContentLibrary $contentLib | Where-Object { $_.ItemType -eq "iso" }
 Write-Host "`nAvailable ISO Files:" -ForegroundColor Cyan
-$isoItems | Format-Table -Property Name, ContentVersion, LastModified# Check if PowerCLI module is installed
-if (-not (Get-Module -Name VMware.PowerCLI -ListAvailable)) {
-    Write-Log "VMware PowerCLI module not found. Installing..." -Level Warning
-    Install-Module -Name VMware.PowerCLI -Scope CurrentUser -Force
-}
-
+$isoItems | Format-Table -Property Name, ContentVersion, LastModified
 
 function Test-VMUpgradeEligibility {
     param (
@@ -384,7 +406,7 @@ function Mount-UpgradeISO {
         
         # Find the ISO item in the Content Library
         $contentItems = Get-ContentLibraryItem -ContentLibrary $contentLibrary | Where-Object { 
-            $_.Name -like "*$isoName*" -and $_.ContentType -eq "iso" 
+            $_.Name -like "*$isoName*" -and $_.ItemType -eq "iso" 
         }
         
         if (-not $contentItems) {
@@ -793,7 +815,7 @@ try {
     
     # Verify ISO items in Content Library
     $contentLib = Get-ContentLibrary -Name $contentLibraryName
-    $availableISOItems = Get-ContentLibraryItem -ContentLibrary $contentLib | Where-Object { $_.ContentType -eq "iso" }
+    $availableISOItems = Get-ContentLibraryItem -ContentLibrary $contentLib | Where-Object { $_.ItemType -eq "iso" }
     
     Write-Log "Found $($availableISOItems.Count) ISO items in Content Library" -Level Info
     
@@ -830,16 +852,7 @@ catch {
     exit 1
 }
 
-# Connect to vCenter
-try {
-    Write-Log "Connecting to vCenter: $vCenterServer" -Level Info
-    Connect-VIServer -Server $vCenterServer -ErrorAction Stop
-    Write-Log "Connected to vCenter successfully" -Level Info
-}
-catch {
-    Write-Log "Failed to connect to vCenter: $_" -Level Error
-    exit 1
-}
+
 
 # Get Windows Server VMs that need upgrade
 Write-Log "Searching for Windows Server VMs eligible for upgrade" -Level Info
@@ -1258,7 +1271,7 @@ foreach ($vm in $windowsVMs) {
                 Write-Host "    - Windows Server $($iso.Step): $($iso.ISO)" -ForegroundColor Green
             }
             foreach ($missing in $isoAvailability.MissingISOs) {
-                Write-Host "    - Windows Server $missing: NOT FOUND" -ForegroundColor Red
+                Write-Host "    - Windows Server $missing NOT FOUND" -ForegroundColor Red
             }
         }
         
