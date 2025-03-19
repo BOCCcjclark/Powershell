@@ -370,82 +370,257 @@ function Backup-VMBeforeUpgrade {
     }
 }
 
+#region Mounting ISO
 function Mount-UpgradeISO {
-    param (
-        [Parameter(Mandatory=$true)]
-        [VMware.VimAutomation.ViCore.Types.V1.Inventory.VirtualMachine]$VM,
+
+        [CmdletBinding()]
+        param (
+            [Parameter(Mandatory=$true)]
+            [VMware.VimAutomation.ViCore.Types.V1.Inventory.VirtualMachine]$VM,
+            
+            [Parameter(Mandatory=$true)]
+            [string]$TargetVersion,
+            
+            [Parameter(Mandatory=$false)]
+            [string]$ContentLibraryName = "ISO's And Admin Tools",
+            
+            [Parameter(Mandatory=$false)]
+            [switch]$Force,
+            
+            [Parameter(Mandatory=$false)]
+            [switch]$Detailed
+        )
         
-        [Parameter(Mandatory=$true)]
-        [string]$TargetVersion
-    )
-    
-    $isoVersion = $TargetVersion
-    if (-not $isoVersion.StartsWith("20")) {
-        $isoVersion = "20$isoVersion"
+        # Initialize result object for detailed output
+        $result = @{
+            Success = $false
+            VM = $VM.Name
+            TargetVersion = $TargetVersion
+            ISOName = $null
+            ErrorMessage = $null
+            ContentLibrary = $ContentLibraryName
+            MountedPath = $null
+            TimeStamp = Get-Date
+        }
+        
+        # Normalize version string (add "20" prefix if needed)
+        $versionKey = $TargetVersion
+        if ($versionKey.Length -eq 2 -or $versionKey.Length -eq 4) {
+            if (-not $versionKey.StartsWith("20")) {
+                $versionDisplay = "20$versionKey"
+            } else {
+                $versionDisplay = $versionKey
+            }
+        } else {
+            $versionDisplay = $versionKey
+        }
+        
+        Write-Log "Attempting to mount Windows Server $versionDisplay ISO for VM: $($VM.Name)" -Level Info
+        
+        try {
+            # Verify VM is valid
+            if ($VM.PowerState -ne "PoweredOn") {
+                $message = "VM is not powered on. Current state: $($VM.PowerState)"
+                Write-Log $message -Level Warning
+                $result.ErrorMessage = $message
+                if ($Detailed) { return $result } else { return $false }
+            }
+            
+            # Get the Content Library
+            Write-Log "Accessing Content Library: $ContentLibraryName" -Level Info
+            $contentLibrary = Get-ContentLibrary -Name $ContentLibraryName -ErrorAction Stop
+            
+            if (-not $contentLibrary) {
+                $message = "Content Library '$ContentLibraryName' not found"
+                Write-Log $message -Level Error
+                $result.ErrorMessage = $message
+                if ($Detailed) { return $result } else { return $false }
+            }
+            
+            # Get the ISO name pattern to search for
+            $isoPattern = $null
+            
+            # Check if we have a defined name in the collection
+            if ($isoNameCollection.ContainsKey($versionKey)) {
+                $isoPattern = $isoNameCollection[$versionKey]
+                Write-Log "Using ISO name pattern from collection: $isoPattern" -Level Info
+            } else {
+                # Fallback to generic pattern
+                $isoPattern = "Windows Server $versionDisplay"
+                Write-Log "Using fallback ISO name pattern: $isoPattern" -Level Warning
+            }
+            
+            # Find all matching ISOs in Content Library
+            Write-Log "Searching for ISOs matching pattern: *$isoPattern*" -Level Info
+            $matchingISOItems = Get-ContentLibraryItem -ContentLibrary $contentLibrary | Where-Object { 
+                $_.Name -like "*$isoPattern*" -and $_.ItemType -eq "iso" 
+            }
+            
+            # Handle no matching ISOs found
+            if (-not $matchingISOItems -or $matchingISOItems.Count -eq 0) {
+                $message = "Could not find any ISO matching '$isoPattern' in Content Library"
+                Write-Log $message -Level Error
+                
+                # List available ISOs to help troubleshoot
+                $availableISOs = Get-ContentLibraryItem -ContentLibrary $contentLibrary | 
+                    Where-Object { $_.ItemType -eq "iso" } | 
+                    Select-Object -ExpandProperty Name
+                    
+                if ($availableISOs) {
+                    Write-Log "Available ISOs in Content Library: $($availableISOs -join ', ')" -Level Info
+                } else {
+                    Write-Log "No ISOs found in Content Library" -Level Warning
+                }
+                
+                $result.ErrorMessage = $message
+                if ($Detailed) { return $result } else { return $false }
+            }
+            
+            # Handle multiple matching ISOs
+            if ($matchingISOItems.Count -gt 1) {
+                Write-Log "Found multiple matching ISOs. Selecting best match." -Level Info
+                
+                foreach ($item in $matchingISOItems) {
+                    Write-Log "  - $($item.Name)" -Level Info
+                }
+                
+                # Try to find R2 version for 2008 and 2012 if needed
+                if ($versionKey -eq "2008" -or $versionKey -eq "2012") {
+                    $r2Items = $matchingISOItems | Where-Object { $_.Name -like "*R2*" }
+                    if ($r2Items.Count -gt 0) {
+                        Write-Log "Found R2 versions, preferring those" -Level Info
+                        $matchingISOItems = $r2Items
+                    }
+                }
+                
+                # Sort by name descending (typically puts latest versions first)
+                # And select most specific match by longest name (usually contains more details)
+                $selectedISO = $matchingISOItems | 
+                    Sort-Object -Property @{Expression = {$_.Name.Length}; Descending = $true}, Name -Descending | 
+                    Select-Object -First 1
+            } else {
+                $selectedISO = $matchingISOItems
+            }
+            
+            $result.ISOName = $selectedISO.Name
+            Write-Log "Selected ISO: $($selectedISO.Name)" -Level Info
+            
+            # Get the VM View Object
+            $vmView = Get-View -VIObject $VM
+            
+            # Get existing CD-ROM device
+            $cdRomDevice = $vmView.Config.Hardware.Device | Where-Object { $_ -is [VMware.Vim.VirtualCdrom] } | Select-Object -First 1
+            
+            if (-not $cdRomDevice) {
+                $message = "No CD/DVD drive found on VM $($VM.Name)"
+                Write-Log $message -Level Error
+                $result.ErrorMessage = $message
+                if ($Detailed) { return $result } else { return $false }
+            }
+            
+            # Check if we need to unmount an existing ISO
+            if ($cdRomDevice.Backing -is [VMware.Vim.VirtualCdromIsoBackingInfo] -and 
+                $cdRomDevice.Backing.FileName -and 
+                -not $Force) {
+                $message = "An ISO is already mounted: $($cdRomDevice.Backing.FileName). Use -Force to unmount it."
+                Set-CDDrive -NoMedia -Confirm:$false -VM $VM
+                Write-Log $message -Level Warning
+                $result.ErrorMessage = $message
+                $result.MountedPath = $cdRomDevice.Backing.FileName
+                if ($Detailed) { return $result } else { return $false }
+            }
+            
+            # Get detailed ISO path for Content Library
+            $isoFileId = $selectedISO.Id
+            $contentLibId = $contentLibrary.Id
+            
+            # Get the full ISO path from Content Library item details
+            $clItem = Get-ContentLibraryItem -Id $selectedISO.Id -ErrorAction Stop
+            $clItemFiles = Get-ContentLibraryItemFile -ContentLibraryItem $clItem -ErrorAction Stop
+            
+            # Find the ISO file
+            $isoFile = $clItemFiles | Where-Object { $_.Name -like "*.iso" -or $_.Name -like "*.ISO" } | Select-Object -First 1
+            
+            if (-not $isoFile) {
+                $message = "Could not find ISO file in Content Library item"
+                Write-Log $message -Level Error
+                $result.ErrorMessage = $message
+                if ($Detailed) { return $result } else { return $false }
+            }
+            
+            # Build the complete ISO file path for vSphere
+            $isoPath = "[$($contentLibrary.Name)] contentlib-$($contentLibId)/$($isoFileId)/$($isoFile.Name)"
+            
+            Write-Log "Using ISO path: $isoPath" -Level Info
+            
+            # Create VM config spec
+            $spec = New-Object VMware.Vim.VirtualMachineConfigSpec
+            $spec.DeviceChange = New-Object VMware.Vim.VirtualDeviceConfigSpec[] (1)
+            $spec.DeviceChange[0] = New-Object VMware.Vim.VirtualDeviceConfigSpec
+            
+            # Configure CD-ROM device
+            $spec.DeviceChange[0].Device = New-Object VMware.Vim.VirtualCdrom
+            $spec.DeviceChange[0].Device.Key = $cdRomDevice.Key
+            $spec.DeviceChange[0].Device.ControllerKey = $cdRomDevice.ControllerKey
+            $spec.DeviceChange[0].Device.UnitNumber = $cdRomDevice.UnitNumber
+            
+            # Configure connection settings
+            $spec.DeviceChange[0].Device.Connectable = New-Object VMware.Vim.VirtualDeviceConnectInfo
+            $spec.DeviceChange[0].Device.Connectable.Connected = $true
+            $spec.DeviceChange[0].Device.Connectable.StartConnected = $true
+            $spec.DeviceChange[0].Device.Connectable.AllowGuestControl = $true
+            $spec.DeviceChange[0].Device.Connectable.Status = 'ok'
+            
+            # Set backing to ISO file
+            $spec.DeviceChange[0].Device.Backing = New-Object VMware.Vim.VirtualCdromIsoBackingInfo
+            $spec.DeviceChange[0].Device.Backing.FileName = $isoPath
+            
+            # Device info
+            $spec.DeviceChange[0].Device.DeviceInfo = New-Object VMware.Vim.Description
+            $spec.DeviceChange[0].Device.DeviceInfo.Label = "CD/DVD drive " + $cdRomDevice.UnitNumber
+            $spec.DeviceChange[0].Device.DeviceInfo.Summary = "ISO: $($selectedISO.Name)"
+            
+            # Set operation to edit
+            $spec.DeviceChange[0].Operation = 'edit'
+            
+            # Apply the changes
+            Write-Log "Applying VM configuration changes to mount ISO" -Level Info
+            $task = $vmView.ReconfigVM_Task($spec)
+            $taskResult = Wait-Task $task
+            
+            # Verify mounting was successful
+            Start-Sleep -Seconds 2  # Brief pause to allow mount operation to complete
+            
+            # Get updated VM view
+            $updatedVmView = Get-View -VIObject $VM
+            $updatedCdRom = $updatedVmView.Config.Hardware.Device | 
+                Where-Object { $_ -is [VMware.Vim.VirtualCdrom] -and $_.Key -eq $cdRomDevice.Key } | 
+                Select-Object -First 1
+            
+            if ($updatedCdRom.Backing -is [VMware.Vim.VirtualCdromIsoBackingInfo] -and 
+                $updatedCdRom.Backing.FileName -eq $isoPath -and
+                $updatedCdRom.Connectable.Connected) {
+                
+                Write-Log "ISO successfully mounted: $($selectedISO.Name)" -Level Info
+                $result.Success = $true
+                $result.MountedPath = $updatedCdRom.Backing.FileName
+                if ($Detailed) { return $result } else { return $true }
+            } else {
+                $message = "ISO mount verification failed"
+                Write-Log $message -Level Error
+                $result.ErrorMessage = $message
+                if ($Detailed) { return $result } else { return $false }
+            }
+        }
+        catch {
+            $message = "Error mounting ISO: $_"
+            Write-Log $message -Level Error
+            $result.ErrorMessage = $message
+            if ($Detailed) { return $result } else { return $false }
+        }
     }
-    
-    # Get the ISO name from the collection
-    $isoKey = $TargetVersion
-    if ($isoNameCollection.ContainsKey($isoKey)) {
-        $isoName = $isoNameCollection[$isoKey]
-    }
-    else {
-        Write-Log "No ISO name defined for Windows Server $TargetVersion" -Level Error
-        return $false
-    }
-    
-    Write-Log "Attempting to mount Windows Server $TargetVersion ISO from Content Library to VM: $($VM.Name)" -Level Info
-    
-    try {
-        # Get the Content Library
-        $contentLibrary = Get-ContentLibrary -Name $contentLibraryName -ErrorAction Stop
-        if (-not $contentLibrary) {
-            Write-Log "Content Library '$contentLibraryName' not found" -Level Error
-            return $false
-        }
-        
-        # Find the ISO item in the Content Library
-        $contentItems = Get-ContentLibraryItem -ContentLibrary $contentLibrary | Where-Object { 
-            $_.Name -like "*$isoName*" -and $_.ItemType -eq "iso" 
-        }
-        
-        if (-not $contentItems) {
-            Write-Log "Could not find ISO for Windows Server $TargetVersion in Content Library" -Level Error
-            return $false
-        }
-        
-        # If multiple matches, use the most specific one
-        $contentItem = $contentItems | Sort-Object -Property Name -Descending | Select-Object -First 1
-        Write-Log "Found ISO in Content Library: $($contentItem.Name)" -Level Info
-        
-        # Get CD drive
-        $cdDrive = Get-CDDrive -VM $VM
-        
-        # Check if a disk is already mounted, unmount if necessary
-        if ($cdDrive.IsoPath -ne $null -and $cdDrive.IsoPath -ne "") {
-            Write-Log "A disk is already mounted. Unmounting..." -Level Warning
-            Set-CDDrive -CD $cdDrive -NoMedia -Confirm:$false
-        }
-        
-        # Mount ISO from Content Library
-        Set-CDDrive -CD $cdDrive -ContentLibraryIso $contentItem -StartConnected $true -Confirm:$false
-        
-        # Verify mounting was successful
-        $cdDrive = Get-CDDrive -VM $VM
-        if ($cdDrive.ConnectionState.Connected) {
-            Write-Log "ISO mounted successfully from Content Library: $($contentItem.Name)" -Level Info
-            return $true
-        }
-        else {
-            Write-Log "ISO mount verification failed" -Level Error
-            return $false
-        }
-    }
-    catch {
-        Write-Log "Failed to mount ISO to VM $($VM.Name): $_" -Level Error
-        return $false
-    }
-}
+#endregion Mounting ISO
+
 
 function Invoke-RemoteUpgrade {
     param (
@@ -755,7 +930,7 @@ function Generate-UpgradeReport {
     $UpgradeResults | Export-Csv -Path $upgradeReport -NoTypeInformation
     
     # Create summary
-    $summary = @"
+    $summary = "
 Windows Server Upgrade Summary
 -----------------------------
 Total VMs processed: $($UpgradeResults.Count)
@@ -767,7 +942,7 @@ Upgrade processes initiated: $($UpgradeResults | Where-Object { $_.UpgradeInitia
 Upgrade processes failed: $($UpgradeResults | Where-Object { $_.UpgradeInitiated -eq $false -and $_.Eligible -eq $true } | Measure-Object).Count
 
 Detailed report saved to: $upgradeReport
-"@
+"
     
     Write-Log $summary -Level Info
     return $summary
@@ -856,10 +1031,13 @@ catch {
 
 # Get Windows Server VMs that need upgrade
 Write-Log "Searching for Windows Server VMs eligible for upgrade" -Level Info
-$windowsVMs = Get-VM | Where-Object {
-    $_.Guest.OSFullName -match "Windows Server (2003|2008|2012|2016|2019)" -and
-    $_.Guest.OSFullName -notmatch "Windows Server 2022"
-}
+#test 1 VM
+$windowsVMs = Get-VM -Name "lc2tvm-2012r2"
+
+# $windowsVMs = Get-VM | Where-Object {
+#     $_.Guest.OSFullName -match "Windows Server (2003|2008|2012|2016|2019)" -and
+#     $_.Guest.OSFullName -notmatch "Windows Server 2022"
+# }
 
 Write-Log "Found $($windowsVMs.Count) Windows Server VMs for potential upgrade" -Level Info
 
