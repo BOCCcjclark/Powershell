@@ -15,23 +15,22 @@ Set-PowerCLIConfiguration -DefaultVIServerMode Multiple -Confirm:$false | Out-Nu
 
 
 #region Configuration Parameters
-# Update these parameters as needed
-$vCenterServer = "your-vcenter-server.domain.com"
+$vCenterServer = "https://lc1pvm-vcenter.lee-county-fl.gov/"
 
 # Content Library name where Windows Server ISOs are stored
-$contentLibraryName = "OS-Images"
+$contentLibraryName = "ISO's And Admin Tools"
 
 # ISO item names in the Content Library (adjust as needed)
 $isoNameCollection = @{
-    "2008" = "WindowsServer2008R2"
-    "2012" = "WindowsServer2012R2"
-    "2016" = "WindowsServer2016"
-    "2019" = "WindowsServer2019"
-    "2022" = "WindowsServer2022"
+    "2008" = "Windows Server 2008 R2"
+    "2012" = "Windows Server 2012 R2"
+    "2016" = "Windows Server 2016"
+    "2019" = "Windows Server 2019"
+    "2022" = "Windows Server 2022"
 }
 
 # Backup and log locations
-$backupLocation = "\\your-backup-server\backups"
+$backupLocation = "\\emcisl01\ITG\Servers\Win VM vsphere config backups"
 $logFile = "C:\Logs\ServerUpgrade_$(Get-Date -Format 'yyyyMMdd_HHmmss').log"
 $upgradeReport = "C:\Logs\UpgradeReport_$(Get-Date -Format 'yyyyMMdd').csv"
 
