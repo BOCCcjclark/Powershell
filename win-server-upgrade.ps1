@@ -284,12 +284,12 @@ function Test-VMUpgradeEligibility {
         Write-Log "VM $($VM.Name) is running Windows Server 2012 (non-R2). Multiple step upgrade required." -Level Info
         return @{
             Eligible = $true
-            Reason = "Multiple step upgrades required"
-            UpgradePath = "Multi-step upgrade: 2012 → 2012 R2 → 2019 → 2022"
-            UpgradeSteps = @("2012", "2019", "2022")
-            RequiredISOs = @("2012", "2019", "2022")
+            Reason = "Two-step upgrade required"
+            UpgradePath = "Two-step upgrade: 2012 R2 → 2019 → 2022"
+            UpgradeSteps = @("2019", "2022")
+            RequiredISOs = @("2019", "2022")
             CurrentStep = "2012"
-            NextStep = "2012"
+            NextStep = "2019"
         }
     }
     # Windows Server 2012 R2
@@ -372,8 +372,7 @@ function Backup-VMBeforeUpgrade {
 
 #region Mounting ISO
 function Mount-UpgradeISO {
-
-        [CmdletBinding()]
+        [CmdletBinding(SupportsShouldProcess = $true, ConfirmImpact = 'High')]
         param (
             [Parameter(Mandatory=$true)]
             [VMware.VimAutomation.ViCore.Types.V1.Inventory.VirtualMachine]$VM,
@@ -390,6 +389,16 @@ function Mount-UpgradeISO {
             [Parameter(Mandatory=$false)]
             [switch]$Detailed
         )
+        
+        # Console output with step header
+        Write-Host "`n===========================" -ForegroundColor Cyan
+        Write-Host " ISO MOUNT OPERATION START " -ForegroundColor Cyan
+        Write-Host "===========================`n" -ForegroundColor Cyan
+        Write-Host "STEP 1: Initializing parameters" -ForegroundColor Yellow
+        Write-Host "  VM: $($VM.Name)" -ForegroundColor Gray
+        Write-Host "  Target Version: $TargetVersion" -ForegroundColor Gray
+        Write-Host "  Content Library: $ContentLibraryName" -ForegroundColor Gray
+        Write-Host "  Force Unmount: $Force" -ForegroundColor Gray
         
         # Initialize result object for detailed output
         $result = @{
@@ -416,42 +425,90 @@ function Mount-UpgradeISO {
         }
         
         Write-Log "Attempting to mount Windows Server $versionDisplay ISO for VM: $($VM.Name)" -Level Info
+        Write-Host "`nSTEP 2: Checking VM status" -ForegroundColor Yellow
         
         try {
             # Verify VM is valid
             if ($VM.PowerState -ne "PoweredOn") {
                 $message = "VM is not powered on. Current state: $($VM.PowerState)"
                 Write-Log $message -Level Warning
+                Write-Host "  ERROR: $message" -ForegroundColor Red
                 $result.ErrorMessage = $message
                 if ($Detailed) { return $result } else { return $false }
             }
+            Write-Host "  VM power state: $($VM.PowerState)" -ForegroundColor Green
+            
+            # Get CD drive
+            Write-Host "`nSTEP 3: Checking CD/DVD drive" -ForegroundColor Yellow
+            Write-Log "Getting CD/DVD drive for VM: $($VM.Name)" -Level Info
+            $cdDrive = Get-CDDrive -VM $VM
+            
+            if (-not $cdDrive) {
+                $message = "No CD/DVD drive found on VM $($VM.Name)"
+                Write-Log $message -Level Error
+                Write-Host "  ERROR: $message" -ForegroundColor Red
+                $result.ErrorMessage = $message
+                if ($Detailed) { return $result } else { return $false }
+            }
+            Write-Host "  Found CD drive: $($cdDrive.Name)" -ForegroundColor Green
+            
+            # Check if already mounted and force unmount if needed
+            if ($cdDrive.IsoPath) {
+                Write-Host "  Current ISO path: $($cdDrive.IsoPath)" -ForegroundColor Gray
+                if (-not $Force) {
+                    $message = "An ISO is already mounted: $($cdDrive.IsoPath). Use -Force to unmount it."
+                    Write-Log $message -Level Warning
+                    Write-Host "  WARNING: $message" -ForegroundColor Yellow
+                    $result.ErrorMessage = $message
+                    $result.MountedPath = $cdDrive.IsoPath
+                    if ($Detailed) { return $result } else { return $false }
+                } else {
+                    $message = "An ISO is already mounted: $($cdDrive.IsoPath). Unmounting it automatically."
+                    Write-Log $message -Level Warning
+                    Write-Host "  NOTE: $message" -ForegroundColor Yellow
+                    $result.MountedPath = $cdDrive.IsoPath
+                }
+            } else {
+                Write-Host "  No ISO currently mounted" -ForegroundColor Gray
+            }
             
             # Get the Content Library
+            Write-Host "`nSTEP 4: Accessing Content Library" -ForegroundColor Yellow
             Write-Log "Accessing Content Library: $ContentLibraryName" -Level Info
             $contentLibrary = Get-ContentLibrary -Name $ContentLibraryName -ErrorAction Stop
             
             if (-not $contentLibrary) {
                 $message = "Content Library '$ContentLibraryName' not found"
                 Write-Log $message -Level Error
+                Write-Host "  ERROR: $message" -ForegroundColor Red
                 $result.ErrorMessage = $message
                 if ($Detailed) { return $result } else { return $false }
             }
+            Write-Host "  Content Library found: $ContentLibraryName" -ForegroundColor Green
+            Write-Host "  Library Type: $($contentLibrary.Type)" -ForegroundColor Gray
+            Write-Host "  Library ID: $($contentLibrary.Id)" -ForegroundColor Gray
             
             # Get the ISO name pattern to search for
+            Write-Host "`nSTEP 5: Determining ISO pattern to search for" -ForegroundColor Yellow
             $isoPattern = $null
             
             # Check if we have a defined name in the collection
             if ($isoNameCollection.ContainsKey($versionKey)) {
                 $isoPattern = $isoNameCollection[$versionKey]
                 Write-Log "Using ISO name pattern from collection: $isoPattern" -Level Info
+                Write-Host "  Using predefined pattern: $isoPattern" -ForegroundColor Green
             } else {
                 # Fallback to generic pattern
                 $isoPattern = "Windows Server $versionDisplay"
                 Write-Log "Using fallback ISO name pattern: $isoPattern" -Level Warning
+                Write-Host "  Using fallback pattern: $isoPattern" -ForegroundColor Yellow
             }
             
             # Find all matching ISOs in Content Library
+            Write-Host "`nSTEP 6: Searching for matching ISOs" -ForegroundColor Yellow
             Write-Log "Searching for ISOs matching pattern: *$isoPattern*" -Level Info
+            Write-Host "  Searching for ISOs matching: *$isoPattern*" -ForegroundColor Gray
+            
             $matchingISOItems = Get-ContentLibraryItem -ContentLibrary $contentLibrary | Where-Object { 
                 $_.Name -like "*$isoPattern*" -and $_.ItemType -eq "iso" 
             }
@@ -460,6 +517,7 @@ function Mount-UpgradeISO {
             if (-not $matchingISOItems -or $matchingISOItems.Count -eq 0) {
                 $message = "Could not find any ISO matching '$isoPattern' in Content Library"
                 Write-Log $message -Level Error
+                Write-Host "  ERROR: $message" -ForegroundColor Red
                 
                 # List available ISOs to help troubleshoot
                 $availableISOs = Get-ContentLibraryItem -ContentLibrary $contentLibrary | 
@@ -468,20 +526,30 @@ function Mount-UpgradeISO {
                     
                 if ($availableISOs) {
                     Write-Log "Available ISOs in Content Library: $($availableISOs -join ', ')" -Level Info
+                    Write-Host "  Available ISOs in library:" -ForegroundColor Yellow
+                    foreach ($iso in $availableISOs) {
+                        Write-Host "    - $iso" -ForegroundColor Gray
+                    }
                 } else {
                     Write-Log "No ISOs found in Content Library" -Level Warning
+                    Write-Host "  No ISOs found in Content Library" -ForegroundColor Red
                 }
                 
                 $result.ErrorMessage = $message
                 if ($Detailed) { return $result } else { return $false }
             }
             
+            Write-Host "  Found $($matchingISOItems.Count) matching ISO(s)" -ForegroundColor Green
+            
             # Handle multiple matching ISOs
+            Write-Host "`nSTEP 7: Selecting best matching ISO" -ForegroundColor Yellow
             if ($matchingISOItems.Count -gt 1) {
                 Write-Log "Found multiple matching ISOs. Selecting best match." -Level Info
+                Write-Host "  Multiple matches found, selection required" -ForegroundColor Yellow
                 
+                Write-Host "  Available matches:" -ForegroundColor Gray
                 foreach ($item in $matchingISOItems) {
-                    Write-Log "  - $($item.Name)" -Level Info
+                    Write-Host "    - $($item.Name)" -ForegroundColor Gray
                 }
                 
                 # Try to find R2 version for 2008 and 2012 if needed
@@ -489,6 +557,7 @@ function Mount-UpgradeISO {
                     $r2Items = $matchingISOItems | Where-Object { $_.Name -like "*R2*" }
                     if ($r2Items.Count -gt 0) {
                         Write-Log "Found R2 versions, preferring those" -Level Info
+                        Write-Host "  Found R2 versions, preferring those" -ForegroundColor Yellow
                         $matchingISOItems = $r2Items
                     }
                 }
@@ -498,125 +567,156 @@ function Mount-UpgradeISO {
                 $selectedISO = $matchingISOItems | 
                     Sort-Object -Property @{Expression = {$_.Name.Length}; Descending = $true}, Name -Descending | 
                     Select-Object -First 1
+                
+                Write-Host "  Selection reasoning: Choosing most specific ISO (longest name)" -ForegroundColor Gray
             } else {
                 $selectedISO = $matchingISOItems
+                Write-Host "  Single match found, no selection needed" -ForegroundColor Green
             }
             
             $result.ISOName = $selectedISO.Name
             Write-Log "Selected ISO: $($selectedISO.Name)" -Level Info
+            Write-Host "  Selected ISO: $($selectedISO.Name)" -ForegroundColor Green
+            Write-Host "  ISO ID: $($selectedISO.Id)" -ForegroundColor Gray
             
-            # Get the VM View Object
-            $vmView = Get-View -VIObject $VM
+            $target = "VM:$($VM.Name) CD:$($cdDrive.Name)"
+            $action = "Mount ISO $($selectedISO.Name) from $($ContentLibraryName)"
             
-            # Get existing CD-ROM device
-            $cdRomDevice = $vmView.Config.Hardware.Device | Where-Object { $_ -is [VMware.Vim.VirtualCdrom] } | Select-Object -First 1
-            
-            if (-not $cdRomDevice) {
-                $message = "No CD/DVD drive found on VM $($VM.Name)"
-                Write-Log $message -Level Error
-                $result.ErrorMessage = $message
-                if ($Detailed) { return $result } else { return $false }
-            }
-            
-            # Check if we need to unmount an existing ISO
-            if ($cdRomDevice.Backing -is [VMware.Vim.VirtualCdromIsoBackingInfo] -and 
-                $cdRomDevice.Backing.FileName -and 
-                -not $Force) {
-                $message = "An ISO is already mounted: $($cdRomDevice.Backing.FileName). Use -Force to unmount it."
-                Set-CDDrive -NoMedia -Confirm:$false -VM $VM
-                Write-Log $message -Level Warning
-                $result.ErrorMessage = $message
-                $result.MountedPath = $cdRomDevice.Backing.FileName
-                if ($Detailed) { return $result } else { return $false }
-            }
-            
-            # Get detailed ISO path for Content Library
-            $isoFileId = $selectedISO.Id
-            $contentLibId = $contentLibrary.Id
-            
-            # Get the full ISO path from Content Library item details
-            $clItem = Get-ContentLibraryItem -Id $selectedISO.Id -ErrorAction Stop
-            $clItemFiles = Get-ContentLibraryItemFile -ContentLibraryItem $clItem -ErrorAction Stop
-            
-            # Find the ISO file
-            $isoFile = $clItemFiles | Where-Object { $_.Name -like "*.iso" -or $_.Name -like "*.ISO" } | Select-Object -First 1
-            
-            if (-not $isoFile) {
-                $message = "Could not find ISO file in Content Library item"
-                Write-Log $message -Level Error
-                $result.ErrorMessage = $message
-                if ($Detailed) { return $result } else { return $false }
-            }
-            
-            # Build the complete ISO file path for vSphere
-            $isoPath = "[$($contentLibrary.Name)] contentlib-$($contentLibId)/$($isoFileId)/$($isoFile.Name)"
-            
-            Write-Log "Using ISO path: $isoPath" -Level Info
-            
-            # Create VM config spec
-            $spec = New-Object VMware.Vim.VirtualMachineConfigSpec
-            $spec.DeviceChange = New-Object VMware.Vim.VirtualDeviceConfigSpec[] (1)
-            $spec.DeviceChange[0] = New-Object VMware.Vim.VirtualDeviceConfigSpec
-            
-            # Configure CD-ROM device
-            $spec.DeviceChange[0].Device = New-Object VMware.Vim.VirtualCdrom
-            $spec.DeviceChange[0].Device.Key = $cdRomDevice.Key
-            $spec.DeviceChange[0].Device.ControllerKey = $cdRomDevice.ControllerKey
-            $spec.DeviceChange[0].Device.UnitNumber = $cdRomDevice.UnitNumber
-            
-            # Configure connection settings
-            $spec.DeviceChange[0].Device.Connectable = New-Object VMware.Vim.VirtualDeviceConnectInfo
-            $spec.DeviceChange[0].Device.Connectable.Connected = $true
-            $spec.DeviceChange[0].Device.Connectable.StartConnected = $true
-            $spec.DeviceChange[0].Device.Connectable.AllowGuestControl = $true
-            $spec.DeviceChange[0].Device.Connectable.Status = 'ok'
-            
-            # Set backing to ISO file
-            $spec.DeviceChange[0].Device.Backing = New-Object VMware.Vim.VirtualCdromIsoBackingInfo
-            $spec.DeviceChange[0].Device.Backing.FileName = $isoPath
-            
-            # Device info
-            $spec.DeviceChange[0].Device.DeviceInfo = New-Object VMware.Vim.Description
-            $spec.DeviceChange[0].Device.DeviceInfo.Label = "CD/DVD drive " + $cdRomDevice.UnitNumber
-            $spec.DeviceChange[0].Device.DeviceInfo.Summary = "ISO: $($selectedISO.Name)"
-            
-            # Set operation to edit
-            $spec.DeviceChange[0].Operation = 'edit'
-            
-            # Apply the changes
-            Write-Log "Applying VM configuration changes to mount ISO" -Level Info
-            $task = $vmView.ReconfigVM_Task($spec)
-            $taskResult = Wait-Task $task
-            
-            # Verify mounting was successful
-            Start-Sleep -Seconds 2  # Brief pause to allow mount operation to complete
-            
-            # Get updated VM view
-            $updatedVmView = Get-View -VIObject $VM
-            $updatedCdRom = $updatedVmView.Config.Hardware.Device | 
-                Where-Object { $_ -is [VMware.Vim.VirtualCdrom] -and $_.Key -eq $cdRomDevice.Key } | 
-                Select-Object -First 1
-            
-            if ($updatedCdRom.Backing -is [VMware.Vim.VirtualCdromIsoBackingInfo] -and 
-                $updatedCdRom.Backing.FileName -eq $isoPath -and
-                $updatedCdRom.Connectable.Connected) {
+            if ($PSCmdlet.ShouldProcess($target, $action)) {
+                # Generate a random drive name (3 random uppercase letters)
+                Write-Host "`nSTEP 8: Locating ISO file in datastore" -ForegroundColor Yellow
+                $driveName = -join ((65..90) | Get-Random -Count 3 | ForEach-Object -Process { [char]$_ })
+                $filter = "$($selectedISO.Name)*.iso"
                 
-                Write-Log "ISO successfully mounted: $($selectedISO.Name)" -Level Info
-                $result.Success = $true
-                $result.MountedPath = $updatedCdRom.Backing.FileName
-                if ($Detailed) { return $result } else { return $true }
-            } else {
-                $message = "ISO mount verification failed"
-                Write-Log $message -Level Error
+                # Get the datastore containing the content library
+                $ds = Get-Datastore -Name $selectedISO.ContentLibrary.Datastore
+                
+                Write-Log "Locating ISO file in datastore: $($ds.Name)" -Level Info
+                Write-Host "  Using datastore: $($ds.Name)" -ForegroundColor Gray
+                Write-Host "  Creating temporary PS drive: $driveName" -ForegroundColor Gray
+                
+                # Create a PSDrive to access the datastore
+                New-PSDrive -Name $driveName -PSProvider VimDatastore -Root '\' -Location $ds | Out-Null
+                
+                try {
+                    # Find the content library path on the datastore
+                    Write-Host "  Searching for content library path..." -ForegroundColor Gray
+                    $clPath = Get-ChildItem -Path "$($driveName):" -Filter "$($selectedISO.Id)" -Recurse |
+                        Select-Object -ExpandProperty FolderPath
+                    
+                    Write-Host "  Content library path found: $clPath" -ForegroundColor Gray
+                    
+                    # Find the ISO file in the content library folder
+                    Write-Host "  Searching for ISO file..." -ForegroundColor Gray
+                    $isoPath = Get-ChildItem -Path "$($driveName):\$($clPath.Split(' ')[1])" -Filter $filter -Recurse | 
+                        Select-Object -ExpandProperty DatastoreFullPath
+                    
+                    if (-not $isoPath) {
+                        throw "Could not find ISO file in datastore path"
+                    }
+                    
+                    Write-Log "Found ISO at path: $isoPath" -Level Info
+                    Write-Host "  Found ISO at path: $isoPath" -ForegroundColor Green
+                    
+                    # Create config spec to edit the CD drive
+                    Write-Host "`nSTEP 9: Mounting ISO to VM" -ForegroundColor Yellow
+                    Write-Host "  Creating VM configuration specification" -ForegroundColor Gray
+                    $spec = New-Object VMware.Vim.VirtualMachineConfigSpec
+                    
+                    $change = New-Object VMware.Vim.VirtualDeviceConfigSpec
+                    $change.Operation = [VMware.Vim.VirtualDeviceConfigSpecOperation]::edit
+                    
+                    # Get the CD drive device
+                    $dev = $cdDrive.ExtensionData
+                    $dev.Backing = New-Object VMware.Vim.VirtualCdromIsoBackingInfo
+                    $dev.Backing.FileName = $isoPath
+                    
+                    # Connect the drive
+                    $dev.Connectable.Connected = $true
+                    $dev.Connectable.StartConnected = $true
+                    
+                    $change.Device = $dev
+                    $spec.DeviceChange = @($change)
+                    
+                    # Apply the changes
+                    Write-Log "Applying configuration to mount ISO" -Level Info
+                    Write-Host "  Applying configuration changes to VM..." -ForegroundColor Yellow
+                    $VM.ExtensionData.ReconfigVM($spec)
+                    
+                    # Get the updated CD drive to verify
+                    Write-Host "`nSTEP 10: Verifying mount operation" -ForegroundColor Yellow
+                    Write-Host "  Waiting for operation to complete..." -ForegroundColor Gray
+                    Start-Sleep -Seconds 2
+                    Write-Host "  Getting updated CD drive information..." -ForegroundColor Gray
+                    $updatedCdDrive = Get-CDDrive -Id $cdDrive.Id
+                    
+                    if ($updatedCdDrive.IsoPath -eq $isoPath) {
+                        Write-Log "ISO successfully mounted: $($selectedISO.Name)" -Level Info
+                        Write-Host "  SUCCESS: ISO successfully mounted" -ForegroundColor Green
+                        Write-Host "  ISO Path: $isoPath" -ForegroundColor Green
+                        $result.Success = $true
+                        $result.MountedPath = $isoPath
+                        
+                        Write-Host "`n==========================" -ForegroundColor Cyan
+                        Write-Host " ISO MOUNT OPERATION COMPLETE " -ForegroundColor Cyan
+                        Write-Host "==========================`n" -ForegroundColor Cyan
+                        
+                        if ($Detailed) { 
+                            return $result 
+                        } else { 
+                            return $true 
+                        }
+                    } else {
+                        $message = "ISO mount verification failed"
+                        Write-Log $message -Level Error
+                        Write-Host "  ERROR: $message" -ForegroundColor Red
+                        Write-Host "  Expected path: $isoPath" -ForegroundColor Red
+                        Write-Host "  Actual path: $($updatedCdDrive.IsoPath)" -ForegroundColor Red
+                        $result.ErrorMessage = $message
+                        
+                        Write-Host "`n==========================" -ForegroundColor Red
+                        Write-Host " ISO MOUNT OPERATION FAILED " -ForegroundColor Red
+                        Write-Host "==========================`n" -ForegroundColor Red
+                        
+                        if ($Detailed) { return $result } else { return $false }
+                    }
+                }
+                finally {
+                    # Clean up the temporary PSDrive
+                    Write-Host "  Cleaning up temporary PS drive: $driveName" -ForegroundColor Gray
+                    if (Get-PSDrive -Name $driveName -ErrorAction SilentlyContinue) {
+                        Remove-PSDrive -Name $driveName -Confirm:$false | Out-Null
+                    }
+                }
+            }
+            else {
+                $message = "Operation cancelled by user"
+                Write-Log $message -Level Warning
+                Write-Host "`n  WARNING: $message" -ForegroundColor Yellow
                 $result.ErrorMessage = $message
+                
+                Write-Host "`n==========================" -ForegroundColor Yellow
+                Write-Host " ISO MOUNT OPERATION CANCELLED " -ForegroundColor Yellow
+                Write-Host "==========================`n" -ForegroundColor Yellow
+                
                 if ($Detailed) { return $result } else { return $false }
             }
         }
         catch {
             $message = "Error mounting ISO: $_"
             Write-Log $message -Level Error
+            Write-Host "`n  ERROR: $message" -ForegroundColor Red
             $result.ErrorMessage = $message
-            if ($Detailed) { return $result } else { return $false }
+            
+            Write-Host "`n==========================" -ForegroundColor Red
+            Write-Host " ISO MOUNT OPERATION FAILED " -ForegroundColor Red
+            Write-Host "==========================`n" -ForegroundColor Red
+            
+            if ($Detailed) { 
+                return $result 
+            } else { 
+                return $false 
+            }
         }
     }
 #endregion Mounting ISO
