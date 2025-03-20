@@ -731,7 +731,7 @@ function Invoke-RemoteUpgrade {
         }
         
         # Establish PowerShell remote session
-        $session = New-PSSession -ComputerName $VM.Guest.IPAddress -Credential $cred -ErrorAction Stop
+        $session = New-PSSession -ComputerName $VM.Guest.HostName -Credential $cred -ErrorAction Stop
         
         # Prepare the VM for upgrade (common across all versions)
         Invoke-Command -Session $session -ScriptBlock {
