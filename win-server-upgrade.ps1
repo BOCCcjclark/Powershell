@@ -777,7 +777,7 @@ function Invoke-RemoteUpgrade {
                 }
                 
                 Import-Module PSWindowsUpdate
-                Get-WindowsUpdate -Install -AcceptAll -IgnoreReboot -Verbose -Confirm:$false | Out-File "$logDir\WindowsUpdate.log"
+                #Get-WindowssUpdate -Install -AcceptAll -IgnoreReboot -ComputerName $VM.Guest.HostName -Verbose -Confirm:$false | Out-File "$logDir\WindowsUpdate.log"
             }
             catch {
                 Write-Output "Warning: Unable to install updates automatically: $_"
@@ -931,7 +931,7 @@ AcceptEula=Yes
                         Write-Output "Starting Windows Server $nextVersion setup..."
                         
                         # Direct upgrade to 2022
-                        Start-Process -FilePath $setupPath -ArgumentList "/auto upgrade /quiet /noreboot /compat ignorewarning" -Wait
+                        Start-Process -FilePath $setupPath -ArgumentList "/auto upgrade /quiet /compat ignorewarning /dynamicupdate disable /eula accept" -Wait
                         Write-Output "Setup initiated, server will reboot when ready"
                     }
                     else {
@@ -958,7 +958,7 @@ AcceptEula=Yes
                         Write-Output "Starting Windows Server $nextVersion setup..."
                         
                         # Direct upgrade to 2022
-                        Start-Process -FilePath $setupPath -ArgumentList "/auto upgrade /quiet /noreboot /compat ignorewarning" -Wait
+                        Start-Process -FilePath $setupPath -ArgumentList "/auto upgrade /quiet /compat ignorewarning /dynamicupdate disable /eula accept" -Wait
                         Write-Output "Setup initiated, server will reboot when ready"
                     }
                     else {
