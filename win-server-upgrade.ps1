@@ -1,4 +1,12 @@
 #requires -Modules VMware.PowerCLI
+# Check if PowerShell is running with elevated privileges
+$currentPrincipal = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
+$isAdmin = $currentPrincipal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+
+# Display warning if not running as administrator
+if (-not $isAdmin) {
+    Write-Warning "This script is not running with elevated privileges. Calling the servers to preform Windows Update will fail."
+}
 
 # Windows Server Upgrade Script
 # This script helps upgrade Windows Server 2003, 2008, 2008 R2, 2012, 2012R2, 2016, and 2019 VMs to Windows Server 2022
@@ -769,7 +777,7 @@ function Invoke-RemoteUpgrade {
                 }
                 
                 Import-Module PSWindowsUpdate
-                Get-WindowsUpdate -MicrosoftUpdate -Install -AcceptAll -IgnoreReboot -Verbose | Out-File "$logDir\WindowsUpdate.log"
+                Get-WindowsUpdate -Install -AcceptAll -IgnoreReboot -Verbose -Confirm:$false | Out-File "$logDir\WindowsUpdate.log"
             }
             catch {
                 Write-Output "Warning: Unable to install updates automatically: $_"
@@ -1040,6 +1048,77 @@ $upgradeResults = @()
 
 # Add new functions for multi-step upgrade process
 
+# First, a new function to handle ISO unmounting
+function Unmount-UpgradeISO {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory=$true)]
+        [VMware.VimAutomation.ViCore.Types.V1.Inventory.VirtualMachine]$VM
+    )
+    
+    try {
+        Write-Log "Unmounting ISO from VM: $($VM.Name)" -Level Info
+        Write-Host "  Unmounting ISO from VM..." -ForegroundColor Yellow
+        
+        # Get CD drive
+        $cdDrive = Get-CDDrive -VM $VM
+        
+        if (-not $cdDrive) {
+            Write-Log "No CD/DVD drive found on VM $($VM.Name)" -Level Warning
+            return $false
+        }
+        
+        # Check if an ISO is mounted
+        if (-not $cdDrive.IsoPath) {
+            Write-Log "No ISO currently mounted on VM $($VM.Name)" -Level Info
+            return $true
+        }
+        
+        Write-Log "Unmounting ISO: $($cdDrive.IsoPath)" -Level Info
+        
+        # Create config spec to disconnect CD drive
+        $spec = New-Object VMware.Vim.VirtualMachineConfigSpec
+        
+        $change = New-Object VMware.Vim.VirtualDeviceConfigSpec
+        $change.Operation = [VMware.Vim.VirtualDeviceConfigSpecOperation]::edit
+        
+        # Get the CD drive device
+        $dev = $cdDrive.ExtensionData
+        
+        # Create client device backing
+        $dev.Backing = New-Object VMware.Vim.VirtualCdromRemotePassthroughBackingInfo
+        
+        # Disconnect the drive
+        $dev.Connectable.Connected = $false
+        $dev.Connectable.StartConnected = $false
+        
+        $change.Device = $dev
+        $spec.DeviceChange = @($change)
+        
+        # Apply the changes
+        $VM.ExtensionData.ReconfigVM($spec)
+        
+        # Verify the unmount
+        Start-Sleep -Seconds 2
+        $updatedCdDrive = Get-CDDrive -VM $VM
+        
+        if (-not $updatedCdDrive.IsoPath) {
+            Write-Log "ISO successfully unmounted from VM $($VM.Name)" -Level Info
+            Write-Host "  ISO successfully unmounted" -ForegroundColor Green
+            return $true
+        } else {
+            Write-Log "Failed to verify ISO unmount from VM $($VM.Name)" -Level Warning
+            return $false
+        }
+    }
+    catch {
+        Write-Log "Error unmounting ISO from VM $($VM.Name): $_" -Level Error
+        Write-Host "  ERROR: Failed to unmount ISO: $_" -ForegroundColor Red
+        return $false
+    }
+}
+
+# Updated Start-UpgradeSequence function with ISO unmounting
 function Start-UpgradeSequence {
     param (
         [Parameter(Mandatory=$true)]
@@ -1078,6 +1157,7 @@ function Start-UpgradeSequence {
             UpgradeStatus = "Not Started"
             StartTime = $null
             CompletionTime = $null
+            ISOUnmounted = $false
             Timestamp = Get-Date
         }
         
@@ -1138,16 +1218,28 @@ function Start-UpgradeSequence {
                                 $result.CompletedSteps += $upgradeInfo.NextStep
                                 $result.UpgradeStatus = "Step Completed"
                                 Write-Log "Upgrade step completed for VM $($vm.Name) from $($upgradeInfo.CurrentStep) to $($upgradeInfo.NextStep)" -Level Info
+                                
+                                # Unmount ISO after completion in sequential mode
+                                Write-Log "Unmounting ISO after successful upgrade" -Level Info
+                                $result.ISOUnmounted = Unmount-UpgradeISO -VM $vm
                             }
                             else {
                                 $result.UpgradeStatus = "Step Timeout"
                                 Write-Log "Upgrade step timed out for VM $($vm.Name)" -Level Warning
+                                
+                                # Still try to unmount ISO even after timeout
+                                Write-Log "Attempting to unmount ISO after timeout" -Level Info
+                                $result.ISOUnmounted = Unmount-UpgradeISO -VM $vm
                             }
                         }
                     }
                     else {
                         $result.UpgradeStatus = "Failed to Initiate"
                         Write-Log "Failed to initiate upgrade for VM $($vm.Name)" -Level Error
+                        
+                        # Unmount ISO if upgrade failed to initiate
+                        Write-Log "Unmounting ISO after failed upgrade initiation" -Level Info
+                        $result.ISOUnmounted = Unmount-UpgradeISO -VM $vm
                     }
                 }
                 else {
@@ -1175,10 +1267,31 @@ function Start-UpgradeSequence {
         }
     }
     
-    # If in batch mode, wait for all upgrades to complete
+    # If in batch mode, wait for all upgrades to complete and unmount ISOs
     if ($BatchMode -and $runningUpgrades.Count -gt 0) {
         Write-Log "Waiting for remaining $($runningUpgrades.Count) upgrades to complete..." -Level Info
-        Wait-ForUpgradeCompletion -RunningUpgrades $runningUpgrades -TimeoutMinutes 180
+        $batchCompleted = Wait-ForUpgradeCompletion -RunningUpgrades $runningUpgrades -TimeoutMinutes 180
+        
+        # Unmount ISOs for all VMs in batch mode
+        Write-Log "Unmounting ISOs from all VMs after batch completion" -Level Info
+        Write-Host "`nUnmounting ISOs from completed VMs..." -ForegroundColor Yellow
+        
+        foreach ($result in $results) {
+            if ($result.UpgradeInitiated -eq $true) {
+                $vm = Get-VM -Name $result.VMName -ErrorAction SilentlyContinue
+                if ($vm) {
+                    $isoUnmounted = Unmount-UpgradeISO -VM $vm
+                    
+                    # Update result with unmount status
+                    $existingResult = $results | Where-Object { $_.VMName -eq $vm.Name } | Select-Object -First 1
+                    if ($existingResult) {
+                        $existingResult.ISOUnmounted = $isoUnmounted
+                    }
+                    
+                    Write-Host "  VM: $($vm.Name) - ISO Unmounted: $isoUnmounted" -ForegroundColor $(if ($isoUnmounted) { "Green" } else { "Red" })
+                }
+            }
+        }
     }
     
     return $results
@@ -1234,7 +1347,7 @@ function Wait-ForVMUpgrade {
                     
                     if ($testConnection.TcpTestSucceeded) {
                         # Try to establish PS session to check OS
-                        $session = New-PSSession -ComputerName $ipAddress -Credential $cred -ErrorAction Stop
+                        # $session = New-PSSession -ComputerName $ipAddress -Credential $cred -ErrorAction Stop
                         
                         $osInfo = Invoke-Command -Session $session -ScriptBlock {
                             [PSCustomObject]@{
