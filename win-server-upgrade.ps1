@@ -167,7 +167,7 @@ function Test-VMUpgradeEligibility {
         return @{
             Eligible = $true
             Reason = "Multiple step upgrades required"
-            UpgradePath = "Multi-step upgrade: 2003 → 2008 R2 → 2012 R2 → 2019 → 2022"
+            UpgradePath = "Multi-step upgrade: 2003 to 2008 R2 to 2012 R2 to 2019 to 2022"
             UpgradeSteps = @("2008", "2012", "2019", "2022")
             RequiredISOs = @("2008", "2012", "2019", "2022")
             CurrentStep = "2003"
@@ -180,7 +180,7 @@ function Test-VMUpgradeEligibility {
         return @{
             Eligible = $true
             Reason = "Multiple step upgrades required"
-            UpgradePath = "Multi-step upgrade: 2008 → 2012 R2 → 2019 → 2022"
+            UpgradePath = "Multi-step upgrade: 2008 to 2012 R2 to 2019 to 2022"
             UpgradeSteps = @("2012", "2019", "2022")
             RequiredISOs = @("2012", "2019", "2022")
             CurrentStep = "2008"
@@ -193,7 +193,7 @@ function Test-VMUpgradeEligibility {
         return @{
             Eligible = $true
             Reason = "Multiple step upgrades required"
-            UpgradePath = "Multi-step upgrade: 2008 R2 → 2012 R2 → 2019 → 2022"
+            UpgradePath = "Multi-step upgrade: 2008 R2 to 2012 R2 to 2019 to 2022"
             UpgradeSteps = @("2012", "2019", "2022")
             RequiredISOs = @("2012", "2019", "2022")
             CurrentStep = "2008"
@@ -206,7 +206,7 @@ function Test-VMUpgradeEligibility {
         return @{
             Eligible = $true
             Reason = "Two-step upgrade required"
-            UpgradePath = "Two-step upgrade: 2012 R2 → 2019 → 2022"
+            UpgradePath = "Two-step upgrade: 2012 R2 to 2019 to 2022"
             UpgradeSteps = @("2019", "2022")
             RequiredISOs = @("2019", "2022")
             CurrentStep = "2012"
@@ -219,7 +219,7 @@ function Test-VMUpgradeEligibility {
         return @{
             Eligible = $true
             Reason = "Two-step upgrade required"
-            UpgradePath = "Two-step upgrade: 2012 R2 → 2019 → 2022"
+            UpgradePath = "Two-step upgrade: 2012 R2 to 2019 to 2022"
             UpgradeSteps = @("2019", "2022")
             RequiredISOs = @("2019", "2022")
             CurrentStep = "2012"
@@ -232,7 +232,7 @@ function Test-VMUpgradeEligibility {
         return @{
             Eligible = $true
             Reason = "Eligible for direct upgrade"
-            UpgradePath = "Direct upgrade: 2016 → 2022"
+            UpgradePath = "Direct upgrade: 2016 to 2022"
             UpgradeSteps = @("2022")
             RequiredISOs = @("2022")
             CurrentStep = "2016"
@@ -245,7 +245,7 @@ function Test-VMUpgradeEligibility {
         return @{
             Eligible = $true
             Reason = "Eligible for direct upgrade"
-            UpgradePath = "Direct upgrade: 2019 → 2022"
+            UpgradePath = "Direct upgrade: 2019 to 2022"
             UpgradeSteps = @("2022")
             RequiredISOs = @("2022")
             CurrentStep = "2019"
@@ -1347,7 +1347,7 @@ function Wait-ForVMUpgrade {
                     
                     if ($testConnection.TcpTestSucceeded) {
                         # Try to establish PS session to check OS
-                        # $session = New-PSSession -ComputerName $ipAddress -Credential $cred -ErrorAction Stop
+                        $session = New-PSSession -ComputerName $ipAddress -Credential $cred -ErrorAction Stop
                         
                         $osInfo = Invoke-Command -Session $session -ScriptBlock {
                             [PSCustomObject]@{
@@ -1491,7 +1491,7 @@ function Monitor-UpgradeProgress {
         
         # Calculate progress percentage
         if ($result.UpgradePath -ne "None" -and $result.Eligible) {
-            $totalSteps = ($result.UpgradePath -split " → ").Count - 1
+            $totalSteps = ($result.UpgradePath -split " to ").Count - 1
             $completedSteps = if ($result.CompletedSteps) { $result.CompletedSteps.Count } else { 0 }
             
             if ($totalSteps -gt 0) {
