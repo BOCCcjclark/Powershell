@@ -1060,49 +1060,14 @@ function Unmount-UpgradeISO {
         Write-Log "Unmounting ISO from VM: $($VM.Name)" -Level Info
         Write-Host "  Unmounting ISO from VM..." -ForegroundColor Yellow
         
-        # Get CD drive
-        $cdDrive = Get-CDDrive -VM $VM
-        
-        if (-not $cdDrive) {
-            Write-Log "No CD/DVD drive found on VM $($VM.Name)" -Level Warning
-            return $false
-        }
-        
-        # Check if an ISO is mounted
-        if (-not $cdDrive.IsoPath) {
-            Write-Log "No ISO currently mounted on VM $($VM.Name)" -Level Info
-            return $true
-        }
-        
-        Write-Log "Unmounting ISO: $($cdDrive.IsoPath)" -Level Info
-        
-        # Create config spec to disconnect CD drive
-        $spec = New-Object VMware.Vim.VirtualMachineConfigSpec
-        
-        $change = New-Object VMware.Vim.VirtualDeviceConfigSpec
-        $change.Operation = [VMware.Vim.VirtualDeviceConfigSpecOperation]::edit
-        
-        # Get the CD drive device
-        $dev = $cdDrive.ExtensionData
-        
-        # Create client device backing
-        $dev.Backing = New-Object VMware.Vim.VirtualCdromRemotePassthroughBackingInfo
-        
-        # Disconnect the drive
-        $dev.Connectable.Connected = $false
-        $dev.Connectable.StartConnected = $false
-        
-        $change.Device = $dev
-        $spec.DeviceChange = @($change)
-        
-        # Apply the changes
-        $VM.ExtensionData.ReconfigVM($spec)
+        # Use PowerCLI's Set-CDDrive with -NoMedia parameter to unmount the ISO
+        $VM | Get-CDDrive | Set-CDDrive -NoMedia -Confirm:$false | Out-Null
         
         # Verify the unmount
         Start-Sleep -Seconds 2
-        $updatedCdDrive = Get-CDDrive -VM $VM
+        $cdDrive = $VM | Get-CDDrive
         
-        if (-not $updatedCdDrive.IsoPath) {
+        if (-not $cdDrive.IsoPath) {
             Write-Log "ISO successfully unmounted from VM $($VM.Name)" -Level Info
             Write-Host "  ISO successfully unmounted" -ForegroundColor Green
             return $true
