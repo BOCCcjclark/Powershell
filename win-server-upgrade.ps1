@@ -1001,20 +1001,28 @@ function Generate-UpgradeReport {
     # Export results to CSV
     $UpgradeResults | Export-Csv -Path $upgradeReport -NoTypeInformation
     
-    # Create summary
-    $summary = "
+    # Calculate counts properly
+    $totalVMs = $UpgradeResults.Count
+    $directUpgradeVMs = ($UpgradeResults | Where-Object { $_.UpgradePath -match "Direct upgrade:" } | Measure-Object).Count
+    $intermediateUpgradeVMs = ($UpgradeResults | Where-Object { $_.UpgradePath -match "Multi-step upgrade:|Two-step upgrade:" } | Measure-Object).Count
+    $notEligibleVMs = ($UpgradeResults | Where-Object { $_.UpgradePath -eq "None" } | Measure-Object).Count
+    $initiatedUpgrades = ($UpgradeResults | Where-Object { $_.UpgradeInitiated -eq $true } | Measure-Object).Count
+    $failedUpgrades = ($UpgradeResults | Where-Object { $_.UpgradeInitiated -eq $false -and $_.Eligible -eq $true } | Measure-Object).Count
+    
+    # Create summary with pre-calculated values
+    $summary = @"
 Windows Server Upgrade Summary
 -----------------------------
-Total VMs processed: $($UpgradeResults.Count)
-VMs eligible for direct upgrade: $($UpgradeResults | Where-Object { $_.UpgradePath -eq "Direct upgrade to 2022" } | Measure-Object).Count
-VMs requiring intermediate upgrade: $($UpgradeResults | Where-Object { $_.UpgradePath -match "Upgrade to 2019 first" } | Measure-Object).Count
-VMs not eligible for upgrade: $($UpgradeResults | Where-Object { $_.UpgradePath -eq "None" } | Measure-Object).Count
+Total VMs processed: $totalVMs
+VMs eligible for direct upgrade: $directUpgradeVMs
+VMs requiring intermediate upgrade: $intermediateUpgradeVMs
+VMs not eligible for upgrade: $notEligibleVMs
 
-Upgrade processes initiated: $($UpgradeResults | Where-Object { $_.UpgradeInitiated -eq $true } | Measure-Object).Count
-Upgrade processes failed: $($UpgradeResults | Where-Object { $_.UpgradeInitiated -eq $false -and $_.Eligible -eq $true } | Measure-Object).Count
+Upgrade processes initiated: $initiatedUpgrades
+Upgrade processes failed: $failedUpgrades
 
 Detailed report saved to: $upgradeReport
-"
+"@
     
     Write-Log $summary -Level Info
     return $summary
