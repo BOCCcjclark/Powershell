@@ -1538,9 +1538,6 @@ $progressTable = Monitor-UpgradeProgress -UpgradeResults $upgradeResults
 Write-Host "`nUpgrade Progress Summary:" -ForegroundColor Cyan
 $progressTable | Format-Table -Property VMName, CurrentOS, Status, ProgressPercentage, ElapsedTime
 
-# Generate final report
-$summary = Generate-UpgradeReport -UpgradeResults $upgradeResults
-
 # Generate report
 $summary = Generate-UpgradeReport -UpgradeResults $upgradeResults
 
