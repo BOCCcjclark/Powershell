@@ -931,7 +931,7 @@ AcceptEula=Yes
                         Write-Output "Starting Windows Server $nextVersion setup..."
                         
                         # Direct upgrade to 2022
-                        Start-Process -FilePath $setupPath -ArgumentList "/auto upgrade /quiet /compat ignorewarning /dynamicupdate disable /eula accept" -Wait
+                        Start-Process -FilePath $setupPath -ArgumentList "/quiet /auto upgrade /dynamicupdate disable /migratedrivers all /showoobe none /pkey WMDGN-G9PQG-XVVXX-R3X43-63DFG /imageindex 4 /compat ignorewarning" -Wait
                         Write-Output "Setup initiated, server will reboot when ready"
                     }
                     else {
@@ -958,7 +958,7 @@ AcceptEula=Yes
                         Write-Output "Starting Windows Server $nextVersion setup..."
                         
                         # Direct upgrade to 2022
-                        Start-Process -FilePath $setupPath -ArgumentList "/auto upgrade /quiet /compat ignorewarning /dynamicupdate disable /eula accept" -Wait
+                        Start-Process -FilePath $setupPath -ArgumentList "/quiet /auto upgrade /dynamicupdate disable /migratedrivers all /showoobe none /pkey WMDGN-G9PQG-XVVXX-R3X43-63DFG /imageindex 4 /compat ignorewarning" -Wait
                         Write-Output "Setup initiated, server will reboot when ready"
                     }
                     else {
