@@ -416,7 +416,7 @@ function Mount-UpgradeISO {
                 [string]$DisplayName
             )
             
-            # Write-Host "`nSTEP 5$(if ($DisplayName -eq "fallback") { "b" } else { "" }): Locating ISO in $DisplayName datastore" -ForegroundColor Yellow
+            Write-Host "`nSTEP 5$(if ($DisplayName -eq "fallback") { "b" } else { '' }): Locating ISO in $DisplayName datastore" -ForegroundColor Yellow
             Write-Host "  Datastore: $Datastore" -ForegroundColor Gray
             
             # Find the ISO (without mounting)
@@ -740,7 +740,7 @@ function Invoke-RemoteUpgrade {
         }
         
         # Establish PowerShell remote session
-        $session = New-PSSession -ComputerName $VM.Guest.IPAddress -Credential $cred -ErrorAction Stop
+        $session = New-PSSession -ComputerName $VM.Guest.HostName -Credential $cred -ErrorAction Stop
         
         # Prepare the VM for upgrade (common across all versions)
         Invoke-Command -Session $session -ScriptBlock {
@@ -848,23 +848,7 @@ function Invoke-RemoteUpgrade {
                     
                     if (Test-Path "$driveLetter\setup.exe") {
                         Write-Output "Found setup.exe on $driveLetter"
-                        
-                        # Create a temporary answer file for unattended upgrade
-                        $answerFileContent = @"
-[SetupData]
-[UserData]
-AcceptEula=Yes
-[Display]
-[Features]
-[WindowsFeatures]
-[Upgrades]
-[Commands]
-"@
-                        $answerFile = "C:\Windows\Temp\UpgradeAnswer.ini"
-                        $answerFileContent | Out-File -FilePath $answerFile -Encoding ASCII -Force
-                        
-                        Write-Output "Starting setup with answer file..."
-                        Start-Process -FilePath "$driveLetter\setup.exe" -ArgumentList "/unattend:$answerFile /upgrade" -Wait
+                        Start-Process -FilePath "$driveLetter\setup.exe" -ArgumentList "/quiet /auto upgrade /dynamicupdate disable /migratedrivers all /showoobe none /pkey WMDGN-G9PQG-XVVXX-R3X43-63DFG /imageindex 4 /compat ignorewarning" -Wait
                         Write-Output "Setup initiated. Server will reboot automatically when ready."
                     }
                     else {
@@ -891,27 +875,6 @@ AcceptEula=Yes
                         Write-Output "Starting Windows Server $nextVersion setup..."
                         
                         if ($nextVersion -eq "2019") {
-                            # Create unattended XML file for 2019 upgrade
-                            $unattendFile = "C:\Windows\Temp\unattend.xml"
-                            @"
-<?xml version="1.0" encoding="utf-8"?>
-<unattend xmlns="urn:schemas-microsoft-com:unattend">
-    <settings pass="windowsPE">
-        <component name="Microsoft-Windows-Setup" processorArchitecture="amd64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS" xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
-            <UserData>
-                <AcceptEula>true</AcceptEula>
-            </UserData>
-            <ComplianceCheck>
-                <DisplayReport>never</DisplayReport>
-            </ComplianceCheck>
-            <Upgrade>
-                <IgnoreEula>true</IgnoreEula>
-            </Upgrade>
-        </component>
-    </settings>
-</unattend>
-"@ | Out-File -FilePath $unattendFile -Encoding utf8
-                            
                             Start-Process -FilePath $setupPath -ArgumentList "/quiet /auto upgrade /dynamicupdate disable /migratedrivers all /showoobe none /pkey WMDGN-G9PQG-XVVXX-R3X43-63DFG /imageindex 4 /compat ignorewarning" -Wait
                         }
                         else {
