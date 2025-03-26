@@ -297,6 +297,7 @@ function Backup-VMBeforeUpgrade {
 }
 
 function Mount-UpgradeISO {
+
     [CmdletBinding(SupportsShouldProcess = $true, ConfirmImpact = 'High')]
     param (
         [Parameter(Mandatory=$true)]
@@ -368,6 +369,7 @@ function Mount-UpgradeISO {
         Write-Host "  VM power state: $($VM.PowerState)" -ForegroundColor Green
         
         # Get CD drive
+
         Write-Host "`nSTEP 3: Checking CD/DVD drive" -ForegroundColor Yellow
         Write-Log "Getting CD/DVD drive for VM: $($VM.Name)" -Level Info
         $cdDrive = Get-CDDrive -VM $VM
@@ -738,7 +740,7 @@ function Invoke-RemoteUpgrade {
         }
         
         # Establish PowerShell remote session
-        $session = New-PSSession -ComputerName $VM.Guest.HostName -Credential $cred -ErrorAction Stop
+        $session = New-PSSession -ComputerName $VM.Guest.IPAddress -Credential $cred -ErrorAction Stop
         
         # Prepare the VM for upgrade (common across all versions)
         Invoke-Command -Session $session -ScriptBlock {
