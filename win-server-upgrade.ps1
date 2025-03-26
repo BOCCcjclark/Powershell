@@ -17,14 +17,18 @@ Import-Module VMware.PowerCLI
 # Set PowerCLI configuration
 Set-PowerCLIConfiguration -InvalidCertificateAction Ignore -Confirm:$false | Out-Null
 Set-PowerCLIConfiguration -DefaultVIServerMode Multiple -Confirm:$false | Out-Null
-
-
+# Windows Server Upgrade Script
+# This script helps upgrade Windows Server 2003, 2008, 2008 R2, 2012, 2012R2, 2016, and 2019 VMs to Windows Server 2022
+# Prerequisites: PowerCLI module, administrative access to vCenter, Windows Server ISOs for intermediate upgrades
 
 #region Configuration Parameters
+# Update these parameters as needed
 $vCenterServer = "lc1pvm-vcenter.lee-county-fl.gov"
+
 
 # ISO path patterns for different Windows Server versions
 $isoNameCollection = @{
+
     "2008" = "2008"
     "2012" = "2012"
     "2016" = "2016"
@@ -71,6 +75,7 @@ function Write-Log {
     # Write to log file
     Add-Content -Path $logFile -Value $logMessage
 }
+
 
 # Connect to vCenter
 try {
@@ -210,7 +215,7 @@ function Test-VMUpgradeEligibility {
             UpgradeSteps = @("2019", "2022")
             RequiredISOs = @("2019", "2022")
             CurrentStep = "2012"
-            NextStep = "2019"
+            NextStep = "2012"
         }
     }
     # Windows Server 2012 R2
@@ -291,7 +296,6 @@ function Backup-VMBeforeUpgrade {
     }
 }
 
-#region Mounting ISO
 function Mount-UpgradeISO {
     [CmdletBinding(SupportsShouldProcess = $true, ConfirmImpact = 'High')]
     param (
@@ -403,144 +407,153 @@ function Mount-UpgradeISO {
             Write-Host "  Using fallback pattern: $isoPattern" -ForegroundColor Yellow
         }
         
-        # First find the ISO we want to mount from primary datastore
-        Write-Host "`nSTEP 5: Locating ISO in primary datastore" -ForegroundColor Yellow
-        Write-Host "  Datastore: $PrimaryDatastore" -ForegroundColor Gray
-        
-        # Find the ISO (without mounting)
-        $primaryIsoInfo = Find-ISOInDatastore -Datastore $PrimaryDatastore -ISOPattern $isoPattern
-        
-        # Check if we found a suitable ISO
-        if ($primaryIsoInfo.Success) {
-            Write-Host "  Found ISO in primary datastore: $($primaryIsoInfo.ISOName)" -ForegroundColor Green
-            $targetIsoPath = $primaryIsoInfo.ISOPath
-            $targetIsoName = $primaryIsoInfo.ISOName
-            $sourceDatastore = $PrimaryDatastore
+        # Function to try mounting ISO from a specific datastore
+        function TryMountIsoFromDatastore {
+            param (
+                [string]$Datastore,
+                [string]$DisplayName
+            )
+            
+            # Write-Host "`nSTEP 5$(if ($DisplayName -eq "fallback") { "b" } else { "" }): Locating ISO in $DisplayName datastore" -ForegroundColor Yellow
+            Write-Host "  Datastore: $Datastore" -ForegroundColor Gray
+            
+            # Find the ISO (without mounting)
+            $isoInfo = Find-ISOInDatastore -Datastore $Datastore -ISOPattern $isoPattern
+            
+            if (-not $isoInfo.Success) {
+                Write-Host "  Could not find ISO in $DisplayName datastore: $($isoInfo.ErrorMessage)" -ForegroundColor Yellow
+                return @{
+                    Success = $false
+                    ErrorMessage = $isoInfo.ErrorMessage
+                }
+            }
+            
+            Write-Host "  Found ISO in $DisplayName datastore: $($isoInfo.ISOName)" -ForegroundColor Green
+            $targetIsoPath = $isoInfo.ISOPath
+            $targetIsoName = $isoInfo.ISOName
             
             # Check if this exact ISO is already mounted
             if ($isIsoMounted -and $currentIsoPath -eq $targetIsoPath) {
                 Write-Host "  The correct ISO is already mounted. No changes needed." -ForegroundColor Green
                 Write-Log "Correct ISO already mounted: $targetIsoName" -Level Info
                 
-                # Return success result
-                $result.Success = $true
-                $result.ISOName = $targetIsoName
-                $result.MountedPath = $currentIsoPath
-                $result.Datastore = $sourceDatastore
+                return @{
+                    Success = $true
+                    ISOName = $targetIsoName
+                    ISOPath = $targetIsoPath
+                    Datastore = $Datastore
+                    AlreadyMounted = $true
+                }
+            }
+            
+            # Now proceed with mounting the ISO
+            Write-Host "`nSTEP 6: Mounting ISO from $DisplayName datastore" -ForegroundColor Yellow
+            Write-Host "  Mounting ISO: $targetIsoName" -ForegroundColor Gray
+            Write-Host "  From datastore: $Datastore" -ForegroundColor Gray
+            
+            # Mount the ISO
+            $mountResult = Mount-ISO -VM $VM -CDDrive $cdDrive -ISOPath $targetIsoPath -ISOName $targetIsoName
+            
+            if (-not $mountResult.Success) {
+                Write-Host "  WARNING: Failed to mount ISO: $($mountResult.ErrorMessage)" -ForegroundColor Yellow
+                Write-Log "Failed to mount ISO from $DisplayName datastore: $($mountResult.ErrorMessage)" -Level Warning
                 
+                return @{
+                    Success = $false
+                    ErrorMessage = $mountResult.ErrorMessage
+                }
+            }
+            
+            Write-Host "  Successfully mounted ISO" -ForegroundColor Green
+            
+            return @{
+                Success = $true
+                ISOName = $targetIsoName
+                ISOPath = $targetIsoPath
+                Datastore = $Datastore
+                AlreadyMounted = $false
+            }
+        }
+        
+        # Check if a different ISO is already mounted and handle force option
+        if ($isIsoMounted -and -not $Force) {
+            $message = "A different ISO is already mounted: $currentIsoPath. Use -Force to unmount it."
+            Write-Log $message -Level Warning
+            Write-Host "  WARNING: $message" -ForegroundColor Yellow
+            $result.ErrorMessage = $message
+            $result.MountedPath = $currentIsoPath
+            
+            Write-Host "`n==========================" -ForegroundColor Yellow
+            Write-Host " ISO MOUNT OPERATION CANCELLED " -ForegroundColor Yellow
+            Write-Host "==========================`n" -ForegroundColor Yellow
+            
+            if ($Detailed) { return $result } else { return $false }
+        } elseif ($isIsoMounted) {
+            $message = "A different ISO is already mounted: $currentIsoPath. Unmounting it automatically."
+            Write-Log $message -Level Warning
+            Write-Host "  NOTE: $message" -ForegroundColor Yellow
+        }
+        
+        # Try primary datastore first
+        $primaryResult = TryMountIsoFromDatastore -Datastore $PrimaryDatastore -DisplayName "primary"
+        
+        if ($primaryResult.Success) {
+            # Success with primary datastore
+            $result.Success = $true
+            $result.ISOName = $primaryResult.ISOName
+            $result.MountedPath = $primaryResult.ISOPath
+            $result.Datastore = $primaryResult.Datastore
+            
+            if ($primaryResult.AlreadyMounted) {
                 Write-Host "`n==========================" -ForegroundColor Cyan
                 Write-Host " ISO ALREADY CORRECTLY MOUNTED " -ForegroundColor Cyan
                 Write-Host "==========================`n" -ForegroundColor Cyan
-                
-                if ($Detailed) { return $result } else { return $true }
-            }
-        } else {
-            # Try fallback datastore if primary fails
-            Write-Host "  Could not find ISO in primary datastore: $($primaryIsoInfo.ErrorMessage)" -ForegroundColor Yellow
-            Write-Host "`nSTEP 5b: Checking fallback datastore" -ForegroundColor Yellow
-            Write-Host "  Fallback Datastore: $FallbackDatastore" -ForegroundColor Gray
-            
-            $fallbackIsoInfo = Find-ISOInDatastore -Datastore $FallbackDatastore -ISOPattern $isoPattern
-            
-            if ($fallbackIsoInfo.Success) {
-                Write-Host "  Found ISO in fallback datastore: $($fallbackIsoInfo.ISOName)" -ForegroundColor Green
-                $targetIsoPath = $fallbackIsoInfo.ISOPath
-                $targetIsoName = $fallbackIsoInfo.ISOName
-                $sourceDatastore = $FallbackDatastore
-                
-                # Check if this exact ISO is already mounted
-                if ($isIsoMounted -and $currentIsoPath -eq $targetIsoPath) {
-                    Write-Host "  The correct ISO is already mounted. No changes needed." -ForegroundColor Green
-                    Write-Log "Correct ISO already mounted: $targetIsoName" -Level Info
-                    
-                    # Return success result
-                    $result.Success = $true
-                    $result.ISOName = $targetIsoName
-                    $result.MountedPath = $currentIsoPath
-                    $result.Datastore = $sourceDatastore
-                    
-                    Write-Host "`n==========================" -ForegroundColor Cyan
-                    Write-Host " ISO ALREADY CORRECTLY MOUNTED " -ForegroundColor Cyan
-                    Write-Host "==========================`n" -ForegroundColor Cyan
-                    
-                    if ($Detailed) { return $result } else { return $true }
-                }
             } else {
-                # Could not find ISO in either datastore
-                $message = "Could not find suitable ISO in either datastore"
-                Write-Log $message -Level Error
-                Write-Host "  ERROR: $message" -ForegroundColor Red
-                Write-Host "  Primary error: $($primaryIsoInfo.ErrorMessage)" -ForegroundColor Red
-                Write-Host "  Fallback error: $($fallbackIsoInfo.ErrorMessage)" -ForegroundColor Red
-                
-                $result.ErrorMessage = $message
-                
-                Write-Host "`n==========================" -ForegroundColor Red
-                Write-Host " ISO MOUNT OPERATION FAILED " -ForegroundColor Red
-                Write-Host "==========================`n" -ForegroundColor Red
-                
-                if ($Detailed) { return $result } else { return $false }
+                Write-Host "`n==========================" -ForegroundColor Cyan
+                Write-Host " ISO MOUNT OPERATION COMPLETE " -ForegroundColor Cyan
+                Write-Host "==========================`n" -ForegroundColor Cyan
             }
-        }
-        
-        # At this point, we have found a suitable ISO but it's either not mounted or a different ISO is mounted
-        
-        # Check if we need to unmount an existing ISO
-        if ($isIsoMounted) {
-            if (-not $Force) {
-                $message = "A different ISO is already mounted: $currentIsoPath. Use -Force to unmount it."
-                Write-Log $message -Level Warning
-                Write-Host "  WARNING: $message" -ForegroundColor Yellow
-                $result.ErrorMessage = $message
-                $result.MountedPath = $currentIsoPath
-                
-                Write-Host "`n==========================" -ForegroundColor Yellow
-                Write-Host " ISO MOUNT OPERATION CANCELLED " -ForegroundColor Yellow
-                Write-Host "==========================`n" -ForegroundColor Yellow
-                
-                if ($Detailed) { return $result } else { return $false }
-            } else {
-                $message = "A different ISO is already mounted: $currentIsoPath. Unmounting it automatically."
-                Write-Log $message -Level Warning
-                Write-Host "  NOTE: $message" -ForegroundColor Yellow
-            }
-        }
-        
-        # Now proceed with mounting the ISO
-        Write-Host "`nSTEP 6: Mounting ISO" -ForegroundColor Yellow
-        Write-Host "  Mounting ISO: $targetIsoName" -ForegroundColor Gray
-        Write-Host "  From datastore: $sourceDatastore" -ForegroundColor Gray
-        
-        # Mount the ISO
-        $mountResult = Mount-ISO -VM $VM -CDDrive $cdDrive -ISOPath $targetIsoPath -ISOName $targetIsoName
-        
-        if ($mountResult.Success) {
-            Write-Host "  Successfully mounted ISO" -ForegroundColor Green
-            
-            # Return success result
-            $result.Success = $true
-            $result.ISOName = $targetIsoName
-            $result.MountedPath = $targetIsoPath
-            $result.Datastore = $sourceDatastore
-            
-            Write-Host "`n==========================" -ForegroundColor Cyan
-            Write-Host " ISO MOUNT OPERATION COMPLETE " -ForegroundColor Cyan
-            Write-Host "==========================`n" -ForegroundColor Cyan
             
             if ($Detailed) { return $result } else { return $true }
-        } else {
-            $message = "Failed to mount ISO: $($mountResult.ErrorMessage)"
-            Write-Log $message -Level Error
-            Write-Host "  ERROR: $message" -ForegroundColor Red
-            
-            $result.ErrorMessage = $message
-            
-            Write-Host "`n==========================" -ForegroundColor Red
-            Write-Host " ISO MOUNT OPERATION FAILED " -ForegroundColor Red
-            Write-Host "==========================`n" -ForegroundColor Red
-            
-            if ($Detailed) { return $result } else { return $false }
         }
+        
+        # If primary fails, try fallback datastore
+        $fallbackResult = TryMountIsoFromDatastore -Datastore $FallbackDatastore -DisplayName "fallback"
+        
+        if ($fallbackResult.Success) {
+            # Success with fallback datastore
+            $result.Success = $true
+            $result.ISOName = $fallbackResult.ISOName
+            $result.MountedPath = $fallbackResult.ISOPath
+            $result.Datastore = $fallbackResult.Datastore
+            
+            if ($fallbackResult.AlreadyMounted) {
+                Write-Host "`n==========================" -ForegroundColor Cyan
+                Write-Host " ISO ALREADY CORRECTLY MOUNTED " -ForegroundColor Cyan
+                Write-Host "==========================`n" -ForegroundColor Cyan
+            } else {
+                Write-Host "`n==========================" -ForegroundColor Cyan
+                Write-Host " ISO MOUNT OPERATION COMPLETE " -ForegroundColor Cyan
+                Write-Host "==========================`n" -ForegroundColor Cyan
+            }
+            
+            if ($Detailed) { return $result } else { return $true }
+        }
+        
+        # If we get here, both datastores failed
+        $message = "Could not mount ISO from either datastore"
+        Write-Log $message -Level Error
+        Write-Host "  ERROR: $message" -ForegroundColor Red
+        Write-Host "  Primary error: $($primaryResult.ErrorMessage)" -ForegroundColor Red
+        Write-Host "  Fallback error: $($fallbackResult.ErrorMessage)" -ForegroundColor Red
+        
+        $result.ErrorMessage = $message
+        
+        Write-Host "`n==========================" -ForegroundColor Red
+        Write-Host " ISO MOUNT OPERATION FAILED " -ForegroundColor Red
+        Write-Host "==========================`n" -ForegroundColor Red
+        
+        if ($Detailed) { return $result } else { return $false }
     }
     catch {
         $message = "Error mounting ISO: $_"
@@ -559,7 +572,6 @@ function Mount-UpgradeISO {
         }
     }
 }
-
 function Find-ISOInDatastore {
     [CmdletBinding()]
     param (
@@ -1042,7 +1054,7 @@ Write-Log "Script configuration: vCenter=$vCenterServer" -Level Info
 # Get Windows Server VMs that need upgrade
 Write-Log "Searching for Windows Server VMs eligible for upgrade" -Level Info
 #test 1 VM
-$windowsVMs = Get-VM -Name "lc2tvm-2012r2"
+$windowsVMs = Get-VM -Name "LCFAIM01 AIM Facilities Workorder Server"
 
 # $windowsVMs = Get-VM | Where-Object {
 #     $_.Guest.OSFullName -match "Windows Server (2003|2008|2012|2016|2019)" -and
