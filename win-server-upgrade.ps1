@@ -17,14 +17,18 @@ Import-Module VMware.PowerCLI
 # Set PowerCLI configuration
 Set-PowerCLIConfiguration -InvalidCertificateAction Ignore -Confirm:$false | Out-Null
 Set-PowerCLIConfiguration -DefaultVIServerMode Multiple -Confirm:$false | Out-Null
-
-
+# Windows Server Upgrade Script
+# This script helps upgrade Windows Server 2003, 2008, 2008 R2, 2012, 2012R2, 2016, and 2019 VMs to Windows Server 2022
+# Prerequisites: PowerCLI module, administrative access to vCenter, Windows Server ISOs for intermediate upgrades
 
 #region Configuration Parameters
+# Update these parameters as needed
 $vCenterServer = "lc1pvm-vcenter.lee-county-fl.gov"
+
 
 # ISO path patterns for different Windows Server versions
 $isoNameCollection = @{
+
     "2008" = "2008"
     "2012" = "2012"
     "2016" = "2016"
@@ -71,6 +75,7 @@ function Write-Log {
     # Write to log file
     Add-Content -Path $logFile -Value $logMessage
 }
+
 
 # Connect to vCenter
 try {
@@ -210,7 +215,7 @@ function Test-VMUpgradeEligibility {
             UpgradeSteps = @("2019", "2022")
             RequiredISOs = @("2019", "2022")
             CurrentStep = "2012"
-            NextStep = "2019"
+            NextStep = "2012"
         }
     }
     # Windows Server 2012 R2
@@ -291,8 +296,8 @@ function Backup-VMBeforeUpgrade {
     }
 }
 
-#region Mounting ISO
 function Mount-UpgradeISO {
+
     [CmdletBinding(SupportsShouldProcess = $true, ConfirmImpact = 'High')]
     param (
         [Parameter(Mandatory=$true)]
@@ -364,6 +369,7 @@ function Mount-UpgradeISO {
         Write-Host "  VM power state: $($VM.PowerState)" -ForegroundColor Green
         
         # Get CD drive
+
         Write-Host "`nSTEP 3: Checking CD/DVD drive" -ForegroundColor Yellow
         Write-Log "Getting CD/DVD drive for VM: $($VM.Name)" -Level Info
         $cdDrive = Get-CDDrive -VM $VM
@@ -726,7 +732,7 @@ function Invoke-RemoteUpgrade {
         }
         
         # Establish PowerShell remote session
-        $session = New-PSSession -ComputerName $VM.Guest.HostName -Credential $cred -ErrorAction Stop
+        $session = New-PSSession -ComputerName $VM.Guest.IPAddress -Credential $cred -ErrorAction Stop
         
         # Prepare the VM for upgrade (common across all versions)
         Invoke-Command -Session $session -ScriptBlock {
