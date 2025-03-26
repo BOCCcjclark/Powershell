@@ -1,6 +1,12 @@
-
-
 #requires -Modules VMware.PowerCLI
+# Check if PowerShell is running with elevated privileges
+$currentPrincipal = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
+$isAdmin = $currentPrincipal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+
+# Display warning if not running as administrator
+if (-not $isAdmin) {
+    Write-Warning "This script is not running with elevated privileges. Calling the servers to preform Windows Update will fail."
+}
 
 # Windows Server Upgrade Script
 # This script helps upgrade Windows Server 2003, 2008, 2008 R2, 2012, 2012R2, 2016, and 2019 VMs to Windows Server 2022
@@ -19,8 +25,10 @@ Set-PowerCLIConfiguration -DefaultVIServerMode Multiple -Confirm:$false | Out-Nu
 # Update these parameters as needed
 $vCenterServer = "lc1pvm-vcenter.lee-county-fl.gov"
 
-# ISO paths for different Windows Server versions (update these with your local paths)
-$isoPathCollection = @{
+
+# ISO path patterns for different Windows Server versions
+$isoNameCollection = @{
+
     "2008" = "2008"
     "2012" = "2012"
     "2016" = "2016"
@@ -66,6 +74,18 @@ function Write-Log {
     
     # Write to log file
     Add-Content -Path $logFile -Value $logMessage
+}
+
+
+# Connect to vCenter
+try {
+    Write-Log "Connecting to vCenter: $vCenterServer" -Level Info
+    Connect-VIServer -Server $vCenterServer -ErrorAction Stop
+    Write-Log "Connected to vCenter successfully" -Level Info
+}
+catch {
+    Write-Log "Failed to connect to vCenter: $_" -Level Error
+    exit 1
 }
 
 function Test-VMUpgradeEligibility {
@@ -152,7 +172,7 @@ function Test-VMUpgradeEligibility {
         return @{
             Eligible = $true
             Reason = "Multiple step upgrades required"
-            UpgradePath = "Multi-step upgrade: 2003 → 2008 R2 → 2012 R2 → 2019 → 2022"
+            UpgradePath = "Multi-step upgrade: 2003 to 2008 R2 to 2012 R2 to 2019 to 2022"
             UpgradeSteps = @("2008", "2012", "2019", "2022")
             RequiredISOs = @("2008", "2012", "2019", "2022")
             CurrentStep = "2003"
@@ -165,7 +185,7 @@ function Test-VMUpgradeEligibility {
         return @{
             Eligible = $true
             Reason = "Multiple step upgrades required"
-            UpgradePath = "Multi-step upgrade: 2008 → 2012 R2 → 2019 → 2022"
+            UpgradePath = "Multi-step upgrade: 2008 to 2012 R2 to 2019 to 2022"
             UpgradeSteps = @("2012", "2019", "2022")
             RequiredISOs = @("2012", "2019", "2022")
             CurrentStep = "2008"
@@ -178,7 +198,7 @@ function Test-VMUpgradeEligibility {
         return @{
             Eligible = $true
             Reason = "Multiple step upgrades required"
-            UpgradePath = "Multi-step upgrade: 2008 R2 → 2012 R2 → 2019 → 2022"
+            UpgradePath = "Multi-step upgrade: 2008 R2 to 2012 R2 to 2019 to 2022"
             UpgradeSteps = @("2012", "2019", "2022")
             RequiredISOs = @("2012", "2019", "2022")
             CurrentStep = "2008"
@@ -190,10 +210,10 @@ function Test-VMUpgradeEligibility {
         Write-Log "VM $($VM.Name) is running Windows Server 2012 (non-R2). Multiple step upgrade required." -Level Info
         return @{
             Eligible = $true
-            Reason = "Multiple step upgrades required"
-            UpgradePath = "Multi-step upgrade: 2012 → 2012 R2 → 2019 → 2022"
-            UpgradeSteps = @("2012", "2019", "2022")
-            RequiredISOs = @("2012", "2019", "2022")
+            Reason = "Two-step upgrade required"
+            UpgradePath = "Two-step upgrade: 2012 R2 to 2019 to 2022"
+            UpgradeSteps = @("2019", "2022")
+            RequiredISOs = @("2019", "2022")
             CurrentStep = "2012"
             NextStep = "2012"
         }
@@ -204,7 +224,7 @@ function Test-VMUpgradeEligibility {
         return @{
             Eligible = $true
             Reason = "Two-step upgrade required"
-            UpgradePath = "Two-step upgrade: 2012 R2 → 2019 → 2022"
+            UpgradePath = "Two-step upgrade: 2012 R2 to 2019 to 2022"
             UpgradeSteps = @("2019", "2022")
             RequiredISOs = @("2019", "2022")
             CurrentStep = "2012"
@@ -217,7 +237,7 @@ function Test-VMUpgradeEligibility {
         return @{
             Eligible = $true
             Reason = "Eligible for direct upgrade"
-            UpgradePath = "Direct upgrade: 2016 → 2022"
+            UpgradePath = "Direct upgrade: 2016 to 2022"
             UpgradeSteps = @("2022")
             RequiredISOs = @("2022")
             CurrentStep = "2016"
@@ -230,7 +250,7 @@ function Test-VMUpgradeEligibility {
         return @{
             Eligible = $true
             Reason = "Eligible for direct upgrade"
-            UpgradePath = "Direct upgrade: 2019 → 2022"
+            UpgradePath = "Direct upgrade: 2019 to 2022"
             UpgradeSteps = @("2022")
             RequiredISOs = @("2022")
             CurrentStep = "2019"
@@ -277,61 +297,408 @@ function Backup-VMBeforeUpgrade {
 }
 
 function Mount-UpgradeISO {
+
+    [CmdletBinding(SupportsShouldProcess = $true, ConfirmImpact = 'High')]
     param (
         [Parameter(Mandatory=$true)]
         [VMware.VimAutomation.ViCore.Types.V1.Inventory.VirtualMachine]$VM,
         
         [Parameter(Mandatory=$true)]
-        [string]$TargetVersion
+        [string]$TargetVersion,
+        
+        [Parameter(Mandatory=$false)]
+        [string]$PrimaryDatastore = "ISO's And Admin Tools NAP",
+        
+        [Parameter(Mandatory=$false)]
+        [string]$FallbackDatastore = "ISO's And Admin Tools EOC",
+        
+        [Parameter(Mandatory=$false)]
+        [switch]$Force,
+        
+        [Parameter(Mandatory=$false)]
+        [switch]$Detailed
     )
     
-    # Get the ISO path from the collection
-    $isoKey = $TargetVersion
-    if ($isoPathCollection.ContainsKey($isoKey)) {
-        $isoPath = $isoPathCollection[$isoKey]
-    }
-    else {
-        Write-Log "No ISO path defined for Windows Server $TargetVersion" -Level Error
-        return $false
+    # Console output with step header
+    Write-Host "`n===========================" -ForegroundColor Cyan
+    Write-Host " ISO MOUNT OPERATION START " -ForegroundColor Cyan
+    Write-Host "===========================`n" -ForegroundColor Cyan
+    Write-Host "STEP 1: Initializing parameters" -ForegroundColor Yellow
+    Write-Host "  VM: $($VM.Name)" -ForegroundColor Gray
+    Write-Host "  Target Version: $TargetVersion" -ForegroundColor Gray
+    Write-Host "  Primary Datastore: $PrimaryDatastore" -ForegroundColor Gray
+    Write-Host "  Fallback Datastore: $FallbackDatastore" -ForegroundColor Gray
+    Write-Host "  Force Unmount: $Force" -ForegroundColor Gray
+    
+    # Initialize result object for detailed output
+    $result = @{
+        Success = $false
+        VM = $VM.Name
+        TargetVersion = $TargetVersion
+        ISOName = $null
+        ErrorMessage = $null
+        Datastore = $null
+        MountedPath = $null
+        TimeStamp = Get-Date
     }
     
-    Write-Log "Mounting Windows Server $TargetVersion ISO to VM: $($VM.Name)" -Level Info
+    # Normalize version string (add "20" prefix if needed)
+    $versionKey = $TargetVersion
+    if ($versionKey.Length -eq 2 -or $versionKey.Length -eq 4) {
+        if (-not $versionKey.StartsWith("20")) {
+            $versionDisplay = "20$versionKey"
+        } else {
+            $versionDisplay = $versionKey
+        }
+    } else {
+        $versionDisplay = $versionKey
+    }
+    
+    Write-Log "Attempting to mount Windows Server $versionDisplay ISO for VM: $($VM.Name)" -Level Info
+    Write-Host "`nSTEP 2: Checking VM status" -ForegroundColor Yellow
     
     try {
-        # Verify ISO file exists
-        if (-not (Test-Path $isoPath)) {
-            Write-Log "ISO file not found: $isoPath" -Level Error
-            return $false
+        # Verify VM is valid
+        if ($VM.PowerState -ne "PoweredOn") {
+            $message = "VM is not powered on. Current state: $($VM.PowerState)"
+            Write-Log $message -Level Warning
+            Write-Host "  ERROR: $message" -ForegroundColor Red
+            $result.ErrorMessage = $message
+            if ($Detailed) { return $result } else { return $false }
         }
+        Write-Host "  VM power state: $($VM.PowerState)" -ForegroundColor Green
         
         # Get CD drive
+
+        Write-Host "`nSTEP 3: Checking CD/DVD drive" -ForegroundColor Yellow
+        Write-Log "Getting CD/DVD drive for VM: $($VM.Name)" -Level Info
         $cdDrive = Get-CDDrive -VM $VM
         
-        # Check if a disk is already mounted, unmount if necessary
-        if ($cdDrive.IsoPath -ne $null -and $cdDrive.IsoPath -ne "") {
-            Write-Log "A disk is already mounted. Unmounting..." -Level Warning
-            Set-CDDrive -CD $cdDrive -NoMedia -Confirm:$false
+        if (-not $cdDrive) {
+            $message = "No CD/DVD drive found on VM $($VM.Name)"
+            Write-Log $message -Level Error
+            Write-Host "  ERROR: $message" -ForegroundColor Red
+            $result.ErrorMessage = $message
+            if ($Detailed) { return $result } else { return $false }
+        }
+        Write-Host "  Found CD drive: $($cdDrive.Name)" -ForegroundColor Green
+        
+        # Store current ISO path if any
+        $currentIsoPath = $cdDrive.IsoPath
+        $isIsoMounted = ($currentIsoPath -ne $null -and $currentIsoPath -ne "")
+        
+        if ($isIsoMounted) {
+            Write-Host "  Current ISO path: $currentIsoPath" -ForegroundColor Gray
+        } else {
+            Write-Host "  No ISO currently mounted" -ForegroundColor Gray
         }
         
-        # Mount ISO
-        Set-CDDrive -CD $cdDrive -IsoPath $isoPath -Connected $true -Confirm:$false
+        # Get the ISO name pattern to search for
+        Write-Host "`nSTEP 4: Determining ISO pattern to search for" -ForegroundColor Yellow
+        $isoPattern = $null
         
-        # Verify mounting was successful
-        $cdDrive = Get-CDDrive -VM $VM
-        if ($cdDrive.IsoPath -eq $isoPath -and $cdDrive.ConnectionState.Connected) {
-            Write-Log "ISO mounted successfully: $isoPath" -Level Info
-            return $true
+        # Check if we have a defined name in the collection
+        if ($isoNameCollection.ContainsKey($versionKey)) {
+            $isoPattern = $isoNameCollection[$versionKey]
+            Write-Log "Using ISO name pattern from collection: $isoPattern" -Level Info
+            Write-Host "  Using predefined pattern: $isoPattern" -ForegroundColor Green
+        } else {
+            # Fallback to generic pattern
+            $isoPattern = "Windows Server $versionDisplay"
+            Write-Log "Using fallback ISO name pattern: $isoPattern" -Level Warning
+            Write-Host "  Using fallback pattern: $isoPattern" -ForegroundColor Yellow
         }
-        else {
-            Write-Log "ISO mount verification failed" -Level Error
-            return $false
+        
+        # First find the ISO we want to mount from primary datastore
+        Write-Host "`nSTEP 5: Locating ISO in primary datastore" -ForegroundColor Yellow
+        Write-Host "  Datastore: $PrimaryDatastore" -ForegroundColor Gray
+        
+        # Find the ISO (without mounting)
+        $primaryIsoInfo = Find-ISOInDatastore -Datastore $PrimaryDatastore -ISOPattern $isoPattern
+        
+        # Check if we found a suitable ISO
+        if ($primaryIsoInfo.Success) {
+            Write-Host "  Found ISO in primary datastore: $($primaryIsoInfo.ISOName)" -ForegroundColor Green
+            $targetIsoPath = $primaryIsoInfo.ISOPath
+            $targetIsoName = $primaryIsoInfo.ISOName
+            $sourceDatastore = $PrimaryDatastore
+            
+            # Check if this exact ISO is already mounted
+            if ($isIsoMounted -and $currentIsoPath -eq $targetIsoPath) {
+                Write-Host "  The correct ISO is already mounted. No changes needed." -ForegroundColor Green
+                Write-Log "Correct ISO already mounted: $targetIsoName" -Level Info
+                
+                # Return success result
+                $result.Success = $true
+                $result.ISOName = $targetIsoName
+                $result.MountedPath = $currentIsoPath
+                $result.Datastore = $sourceDatastore
+                
+                Write-Host "`n==========================" -ForegroundColor Cyan
+                Write-Host " ISO ALREADY CORRECTLY MOUNTED " -ForegroundColor Cyan
+                Write-Host "==========================`n" -ForegroundColor Cyan
+                
+                if ($Detailed) { return $result } else { return $true }
+            }
+        } else {
+            # Try fallback datastore if primary fails
+            Write-Host "  Could not find ISO in primary datastore: $($primaryIsoInfo.ErrorMessage)" -ForegroundColor Yellow
+            Write-Host "`nSTEP 5b: Checking fallback datastore" -ForegroundColor Yellow
+            Write-Host "  Fallback Datastore: $FallbackDatastore" -ForegroundColor Gray
+            
+            $fallbackIsoInfo = Find-ISOInDatastore -Datastore $FallbackDatastore -ISOPattern $isoPattern
+            
+            if ($fallbackIsoInfo.Success) {
+                Write-Host "  Found ISO in fallback datastore: $($fallbackIsoInfo.ISOName)" -ForegroundColor Green
+                $targetIsoPath = $fallbackIsoInfo.ISOPath
+                $targetIsoName = $fallbackIsoInfo.ISOName
+                $sourceDatastore = $FallbackDatastore
+                
+                # Check if this exact ISO is already mounted
+                if ($isIsoMounted -and $currentIsoPath -eq $targetIsoPath) {
+                    Write-Host "  The correct ISO is already mounted. No changes needed." -ForegroundColor Green
+                    Write-Log "Correct ISO already mounted: $targetIsoName" -Level Info
+                    
+                    # Return success result
+                    $result.Success = $true
+                    $result.ISOName = $targetIsoName
+                    $result.MountedPath = $currentIsoPath
+                    $result.Datastore = $sourceDatastore
+                    
+                    Write-Host "`n==========================" -ForegroundColor Cyan
+                    Write-Host " ISO ALREADY CORRECTLY MOUNTED " -ForegroundColor Cyan
+                    Write-Host "==========================`n" -ForegroundColor Cyan
+                    
+                    if ($Detailed) { return $result } else { return $true }
+                }
+            } else {
+                # Could not find ISO in either datastore
+                $message = "Could not find suitable ISO in either datastore"
+                Write-Log $message -Level Error
+                Write-Host "  ERROR: $message" -ForegroundColor Red
+                Write-Host "  Primary error: $($primaryIsoInfo.ErrorMessage)" -ForegroundColor Red
+                Write-Host "  Fallback error: $($fallbackIsoInfo.ErrorMessage)" -ForegroundColor Red
+                
+                $result.ErrorMessage = $message
+                
+                Write-Host "`n==========================" -ForegroundColor Red
+                Write-Host " ISO MOUNT OPERATION FAILED " -ForegroundColor Red
+                Write-Host "==========================`n" -ForegroundColor Red
+                
+                if ($Detailed) { return $result } else { return $false }
+            }
+        }
+        
+        # At this point, we have found a suitable ISO but it's either not mounted or a different ISO is mounted
+        
+        # Check if we need to unmount an existing ISO
+        if ($isIsoMounted) {
+            if (-not $Force) {
+                $message = "A different ISO is already mounted: $currentIsoPath. Use -Force to unmount it."
+                Write-Log $message -Level Warning
+                Write-Host "  WARNING: $message" -ForegroundColor Yellow
+                $result.ErrorMessage = $message
+                $result.MountedPath = $currentIsoPath
+                
+                Write-Host "`n==========================" -ForegroundColor Yellow
+                Write-Host " ISO MOUNT OPERATION CANCELLED " -ForegroundColor Yellow
+                Write-Host "==========================`n" -ForegroundColor Yellow
+                
+                if ($Detailed) { return $result } else { return $false }
+            } else {
+                $message = "A different ISO is already mounted: $currentIsoPath. Unmounting it automatically."
+                Write-Log $message -Level Warning
+                Write-Host "  NOTE: $message" -ForegroundColor Yellow
+            }
+        }
+        
+        # Now proceed with mounting the ISO
+        Write-Host "`nSTEP 6: Mounting ISO" -ForegroundColor Yellow
+        Write-Host "  Mounting ISO: $targetIsoName" -ForegroundColor Gray
+        Write-Host "  From datastore: $sourceDatastore" -ForegroundColor Gray
+        
+        # Mount the ISO
+        $mountResult = Mount-ISO -VM $VM -CDDrive $cdDrive -ISOPath $targetIsoPath -ISOName $targetIsoName
+        
+        if ($mountResult.Success) {
+            Write-Host "  Successfully mounted ISO" -ForegroundColor Green
+            
+            # Return success result
+            $result.Success = $true
+            $result.ISOName = $targetIsoName
+            $result.MountedPath = $targetIsoPath
+            $result.Datastore = $sourceDatastore
+            
+            Write-Host "`n==========================" -ForegroundColor Cyan
+            Write-Host " ISO MOUNT OPERATION COMPLETE " -ForegroundColor Cyan
+            Write-Host "==========================`n" -ForegroundColor Cyan
+            
+            if ($Detailed) { return $result } else { return $true }
+        } else {
+            $message = "Failed to mount ISO: $($mountResult.ErrorMessage)"
+            Write-Log $message -Level Error
+            Write-Host "  ERROR: $message" -ForegroundColor Red
+            
+            $result.ErrorMessage = $message
+            
+            Write-Host "`n==========================" -ForegroundColor Red
+            Write-Host " ISO MOUNT OPERATION FAILED " -ForegroundColor Red
+            Write-Host "==========================`n" -ForegroundColor Red
+            
+            if ($Detailed) { return $result } else { return $false }
         }
     }
     catch {
-        Write-Log "Failed to mount ISO to VM $($VM.Name): $_" -Level Error
-        return $false
+        $message = "Error mounting ISO: $_"
+        Write-Log $message -Level Error
+        Write-Host "`n  ERROR: $message" -ForegroundColor Red
+        $result.ErrorMessage = $message
+        
+        Write-Host "`n==========================" -ForegroundColor Red
+        Write-Host " ISO MOUNT OPERATION FAILED " -ForegroundColor Red
+        Write-Host "==========================`n" -ForegroundColor Red
+        
+        if ($Detailed) { 
+            return $result 
+        } else { 
+            return $false 
+        }
     }
 }
+
+function Find-ISOInDatastore {
+    [CmdletBinding()]
+    param (
+        [Parameter(Mandatory=$true)]
+        [string]$Datastore,
+        
+        [Parameter(Mandatory=$true)]
+        [string]$ISOPattern
+    )
+    
+    $result = @{
+        Success = $false
+        ISOName = $null
+        ISOPath = $null
+        ErrorMessage = $null
+    }
+    
+    try {
+        # Check if datastore exists
+        $ds = Get-Datastore -Name $Datastore -ErrorAction Stop
+        
+        if (-not $ds) {
+            throw "Datastore '$Datastore' not found"
+        }
+        
+        # Create a temporary PSDrive
+        $driveName = -join ((65..90) | Get-Random -Count 3 | ForEach-Object -Process { [char]$_ })
+        New-PSDrive -Name $driveName -PSProvider VimDatastore -Root '\' -Location $ds | Out-Null
+        
+        try {
+            # Define search patterns
+            $searchPattern = "*$ISOPattern*.iso"
+            
+            # Search for matching ISOs
+            $isoFiles = Get-ChildItem -Path "$($driveName):" -Filter $searchPattern -Recurse | 
+                        Where-Object { $_.Name -like "*.iso" } |
+                        Sort-Object -Property LastWriteTime -Descending
+            
+            if (-not $isoFiles -or $isoFiles.Count -eq 0) {
+                throw "No ISO files matching pattern '$searchPattern' found in datastore '$Datastore'"
+            }
+            
+            # Select the most recent ISO
+            $selectedISO = $isoFiles | Select-Object -First 1
+            
+            # Get the full datastore path
+            $result.ISOName = $selectedISO.Name
+            $result.ISOPath = $selectedISO.DatastoreFullPath
+            $result.Success = $true
+            
+            return $result
+        }
+        finally {
+            # Clean up the temporary PSDrive
+            if (Get-PSDrive -Name $driveName -ErrorAction SilentlyContinue) {
+                Remove-PSDrive -Name $driveName -Confirm:$false | Out-Null
+            }
+        }
+    }
+    catch {
+        $message = "Error finding ISO in datastore $Datastore $_"
+        $result.ErrorMessage = $message
+        return $result
+    }
+}
+
+function Mount-ISO {
+    [CmdletBinding()]
+    param (
+        [Parameter(Mandatory=$true)]
+        [VMware.VimAutomation.ViCore.Types.V1.Inventory.VirtualMachine]$VM,
+        
+        [Parameter(Mandatory=$true)]
+        [VMware.VimAutomation.ViCore.Types.V1.VirtualDevice.CDDrive]$CDDrive,
+        
+        [Parameter(Mandatory=$true)]
+        [string]$ISOPath,
+        
+        [Parameter(Mandatory=$true)]
+        [string]$ISOName
+    )
+    
+    $result = @{
+        Success = $false
+        ErrorMessage = $null
+    }
+    
+    try {
+        # Create config spec to edit the CD drive
+        $spec = New-Object VMware.Vim.VirtualMachineConfigSpec
+        
+        $change = New-Object VMware.Vim.VirtualDeviceConfigSpec
+        $change.Operation = [VMware.Vim.VirtualDeviceConfigSpecOperation]::edit
+        
+        # Get the CD drive device
+        $dev = $CDDrive.ExtensionData
+        $dev.Backing = New-Object VMware.Vim.VirtualCdromIsoBackingInfo
+        $dev.Backing.FileName = $ISOPath
+        
+        # Connect the drive
+        $dev.Connectable.Connected = $true
+        $dev.Connectable.StartConnected = $true
+        
+        $change.Device = $dev
+        $spec.DeviceChange = @($change)
+        
+        # Apply the changes
+        Write-Log "Applying configuration to mount ISO: $ISOName" -Level Info
+        $VM.ExtensionData.ReconfigVM($spec)
+        
+        # Get the updated CD drive to verify
+        Start-Sleep -Seconds 2
+        $updatedCdDrive = Get-CDDrive -Id $CDDrive.Id
+        
+        if ($updatedCdDrive.IsoPath -eq $ISOPath) {
+            Write-Log "ISO successfully mounted: $ISOName" -Level Info
+            $result.Success = $true
+            return $result
+        } else {
+            $message = "ISO mount verification failed"
+            Write-Log $message -Level Error
+            $result.ErrorMessage = $message
+            return $result
+        }
+    }
+    catch {
+        $message = "Error mounting ISO: $_"
+        Write-Log $message -Level Error
+        $result.ErrorMessage = $message
+        return $result
+    }
+}
+#endregion
 
 function Invoke-RemoteUpgrade {
     param (
@@ -416,7 +783,7 @@ function Invoke-RemoteUpgrade {
                 }
                 
                 Import-Module PSWindowsUpdate
-                Get-WindowsUpdate -MicrosoftUpdate -Install -AcceptAll -IgnoreReboot -Verbose | Out-File "$logDir\WindowsUpdate.log"
+                #Get-WindowssUpdate -Install -AcceptAll -IgnoreReboot -ComputerName $VM.Guest.HostName -Verbose -Confirm:$false | Out-File "$logDir\WindowsUpdate.log"
             }
             catch {
                 Write-Output "Warning: Unable to install updates automatically: $_"
@@ -537,7 +904,7 @@ AcceptEula=Yes
 </unattend>
 "@ | Out-File -FilePath $unattendFile -Encoding utf8
                             
-                            Start-Process -FilePath $setupPath -ArgumentList "/auto upgrade /quiet /noreboot /unattendfile:$unattendFile /compat ignorewarning" -Wait
+                            Start-Process -FilePath $setupPath -ArgumentList "/quiet /auto upgrade /dynamicupdate disable /migratedrivers all /showoobe none /pkey WMDGN-G9PQG-XVVXX-R3X43-63DFG /imageindex 4 /compat ignorewarning" -Wait
                         }
                         else {
                             # Standard arguments for other upgrades
@@ -570,7 +937,7 @@ AcceptEula=Yes
                         Write-Output "Starting Windows Server $nextVersion setup..."
                         
                         # Direct upgrade to 2022
-                        Start-Process -FilePath $setupPath -ArgumentList "/auto upgrade /quiet /noreboot /compat ignorewarning" -Wait
+                        Start-Process -FilePath $setupPath -ArgumentList "/quiet /auto upgrade /dynamicupdate disable /migratedrivers all /showoobe none /pkey WMDGN-G9PQG-XVVXX-R3X43-63DFG /imageindex 4 /compat ignorewarning" -Wait
                         Write-Output "Setup initiated, server will reboot when ready"
                     }
                     else {
@@ -597,7 +964,7 @@ AcceptEula=Yes
                         Write-Output "Starting Windows Server $nextVersion setup..."
                         
                         # Direct upgrade to 2022
-                        Start-Process -FilePath $setupPath -ArgumentList "/auto upgrade /quiet /noreboot /compat ignorewarning" -Wait
+                        Start-Process -FilePath $setupPath -ArgumentList "/quiet /auto upgrade /dynamicupdate disable /migratedrivers all /showoobe none /pkey WMDGN-G9PQG-XVVXX-R3X43-63DFG /imageindex 4 /compat ignorewarning" -Wait
                         Write-Output "Setup initiated, server will reboot when ready"
                     }
                     else {
@@ -640,17 +1007,25 @@ function Generate-UpgradeReport {
     # Export results to CSV
     $UpgradeResults | Export-Csv -Path $upgradeReport -NoTypeInformation
     
-    # Create summary
+    # Calculate counts properly
+    $totalVMs = $UpgradeResults.Count
+    $directUpgradeVMs = ($UpgradeResults | Where-Object { $_.UpgradePath -match "Direct upgrade:" } | Measure-Object).Count
+    $intermediateUpgradeVMs = ($UpgradeResults | Where-Object { $_.UpgradePath -match "Multi-step upgrade:|Two-step upgrade:" } | Measure-Object).Count
+    $notEligibleVMs = ($UpgradeResults | Where-Object { $_.UpgradePath -eq "None" } | Measure-Object).Count
+    $initiatedUpgrades = ($UpgradeResults | Where-Object { $_.UpgradeInitiated -eq $true } | Measure-Object).Count
+    $failedUpgrades = ($UpgradeResults | Where-Object { $_.UpgradeInitiated -eq $false -and $_.Eligible -eq $true } | Measure-Object).Count
+    
+    # Create summary with pre-calculated values
     $summary = @"
 Windows Server Upgrade Summary
 -----------------------------
-Total VMs processed: $($UpgradeResults.Count)
-VMs eligible for direct upgrade: $($UpgradeResults | Where-Object { $_.UpgradePath -eq "Direct upgrade to 2022" } | Measure-Object).Count
-VMs requiring intermediate upgrade: $($UpgradeResults | Where-Object { $_.UpgradePath -match "Upgrade to 2019 first" } | Measure-Object).Count
-VMs not eligible for upgrade: $($UpgradeResults | Where-Object { $_.UpgradePath -eq "None" } | Measure-Object).Count
+Total VMs processed: $totalVMs
+VMs eligible for direct upgrade: $directUpgradeVMs
+VMs requiring intermediate upgrade: $intermediateUpgradeVMs
+VMs not eligible for upgrade: $notEligibleVMs
 
-Upgrade processes initiated: $($UpgradeResults | Where-Object { $_.UpgradeInitiated -eq $true } | Measure-Object).Count
-Upgrade processes failed: $($UpgradeResults | Where-Object { $_.UpgradeInitiated -eq $false -and $_.Eligible -eq $true } | Measure-Object).Count
+Upgrade processes initiated: $initiatedUpgrades
+Upgrade processes failed: $failedUpgrades
 
 Detailed report saved to: $upgradeReport
 "@
@@ -668,86 +1043,7 @@ if (-not (Test-Path -Path $logDir)) {
 }
 
 Write-Log "Starting Windows Server upgrade script" -Level Info
-Write-Log "Script configuration: vCenter=$vCenterServer, ISO=$iso_path" -Level Info
-
-# # Check if Content Library is available
-# try {
-#     if (-not (Get-ContentLibrary -Name $contentLibraryName -ErrorAction SilentlyContinue)) {
-#         Write-Log "Content Library '$contentLibraryName' not found. Please verify the name." -Level Error
-        
-#         # List available content libraries
-#         $availableLibraries = Get-ContentLibrary
-#         Write-Log "Available Content Libraries: $($availableLibraries.Name -join ', ')" -Level Info
-        
-#         Write-Host "Content Library '$contentLibraryName' not found." -ForegroundColor Red
-#         Write-Host "Available libraries:" -ForegroundColor Yellow
-#         $availableLibraries | Format-Table -Property Name, Description
-        
-#         $useNewLibrary = Read-Host "Enter name of Content Library to use (leave empty to exit)"
-        
-#         if ([string]::IsNullOrEmpty($useNewLibrary)) {
-#             Write-Log "Script execution cancelled - no valid Content Library" -Level Error
-#             exit 1
-#         }
-        
-#         if (-not (Get-ContentLibrary -Name $useNewLibrary -ErrorAction SilentlyContinue)) {
-#             Write-Log "Content Library '$useNewLibrary' not found. Exiting." -Level Error
-#             exit 1
-#         }
-        
-#         $contentLibraryName = $useNewLibrary
-#         Write-Log "Using Content Library: $contentLibraryName" -Level Info
-#     }
-    
-#     # Verify ISO items in Content Library
-#     $contentLib = Get-ContentLibrary -Name $contentLibraryName
-#     $availableISOItems = Get-ContentLibraryItem -ContentLibrary $contentLib | Where-Object { $_.ContentType -eq "iso" }
-    
-#     Write-Log "Found $($availableISOItems.Count) ISO items in Content Library" -Level Info
-    
-#     # Check for each required ISO
-#     $missingIsos = @()
-#     foreach ($version in $isoNameCollection.Keys) {
-#         $isoPattern = "*$($isoNameCollection[$version])*"
-#         $iso = $availableISOItems | Where-Object { $_.Name -like $isoPattern }
-        
-#         if (-not $iso) {
-#             $missingIsos += "Windows Server $version ($($isoNameCollection[$version]))"
-#         }
-#     }
-    
-#     if ($missingIsos.Count -gt 0) {
-#         Write-Log "Warning: Missing ISOs in Content Library: $($missingIsos -join ', ')" -Level Warning
-#         Write-Host "Warning: The following required ISOs appear to be missing from Content Library:" -ForegroundColor Yellow
-#         foreach ($missing in $missingIsos) {
-#             Write-Host "  - $missing" -ForegroundColor Yellow
-#         }
-        
-#         Write-Host "Available ISOs in Content Library:" -ForegroundColor Cyan
-#         $availableISOItems | Format-Table -Property Name
-        
-#         $continue = Read-Host "Continue anyway? (Y/N)"
-#         if ($continue -ne "Y" -and $continue -ne "y") {
-#             Write-Log "Script execution cancelled - missing required ISOs" -Level Error
-#             exit 1
-#         }
-#     }
-# }
-# catch {
-#     Write-Log "Error checking Content Library: $_" -Level Error
-#     exit 1
-# }
-
-# Connect to vCenter
-try {
-    Write-Log "Connecting to vCenter: $vCenterServer" -Level Info
-    Connect-VIServer -Server $vCenterServer -ErrorAction Stop
-    Write-Log "Connected to vCenter successfully" -Level Info
-}
-catch {
-    Write-Log "Failed to connect to vCenter: $_" -Level Error
-    exit 1
-}
+Write-Log "Script configuration: vCenter=$vCenterServer" -Level Info
 
 # Get Windows Server VMs that need upgrade
 Write-Log "Searching for Windows Server VMs eligible for upgrade" -Level Info
@@ -766,6 +1062,42 @@ $upgradeResults = @()
 
 # Add new functions for multi-step upgrade process
 
+# First, a new function to handle ISO unmounting
+function Unmount-UpgradeISO {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory=$true)]
+        [VMware.VimAutomation.ViCore.Types.V1.Inventory.VirtualMachine]$VM
+    )
+    
+    try {
+        Write-Log "Unmounting ISO from VM: $($VM.Name)" -Level Info
+        Write-Host "  Unmounting ISO from VM..." -ForegroundColor Yellow
+        
+        # Use PowerCLI's Set-CDDrive with -NoMedia parameter to unmount the ISO
+        $VM | Get-CDDrive | Set-CDDrive -NoMedia -Confirm:$false | Out-Null
+        
+        # Verify the unmount
+        Start-Sleep -Seconds 2
+        $cdDrive = $VM | Get-CDDrive
+        
+        if (-not $cdDrive.IsoPath) {
+            Write-Log "ISO successfully unmounted from VM $($VM.Name)" -Level Info
+            Write-Host "  ISO successfully unmounted" -ForegroundColor Green
+            return $true
+        } else {
+            Write-Log "Failed to verify ISO unmount from VM $($VM.Name)" -Level Warning
+            return $false
+        }
+    }
+    catch {
+        Write-Log "Error unmounting ISO from VM $($VM.Name): $_" -Level Error
+        Write-Host "  ERROR: Failed to unmount ISO: $_" -ForegroundColor Red
+        return $false
+    }
+}
+
+# Updated Start-UpgradeSequence function with ISO unmounting
 function Start-UpgradeSequence {
     param (
         [Parameter(Mandatory=$true)]
@@ -804,6 +1136,7 @@ function Start-UpgradeSequence {
             UpgradeStatus = "Not Started"
             StartTime = $null
             CompletionTime = $null
+            ISOUnmounted = $false
             Timestamp = Get-Date
         }
         
@@ -864,16 +1197,28 @@ function Start-UpgradeSequence {
                                 $result.CompletedSteps += $upgradeInfo.NextStep
                                 $result.UpgradeStatus = "Step Completed"
                                 Write-Log "Upgrade step completed for VM $($vm.Name) from $($upgradeInfo.CurrentStep) to $($upgradeInfo.NextStep)" -Level Info
+                                
+                                # Unmount ISO after completion in sequential mode
+                                Write-Log "Unmounting ISO after successful upgrade" -Level Info
+                                $result.ISOUnmounted = Unmount-UpgradeISO -VM $vm
                             }
                             else {
                                 $result.UpgradeStatus = "Step Timeout"
                                 Write-Log "Upgrade step timed out for VM $($vm.Name)" -Level Warning
+                                
+                                # Still try to unmount ISO even after timeout
+                                Write-Log "Attempting to unmount ISO after timeout" -Level Info
+                                $result.ISOUnmounted = Unmount-UpgradeISO -VM $vm
                             }
                         }
                     }
                     else {
                         $result.UpgradeStatus = "Failed to Initiate"
                         Write-Log "Failed to initiate upgrade for VM $($vm.Name)" -Level Error
+                        
+                        # Unmount ISO if upgrade failed to initiate
+                        Write-Log "Unmounting ISO after failed upgrade initiation" -Level Info
+                        $result.ISOUnmounted = Unmount-UpgradeISO -VM $vm
                     }
                 }
                 else {
@@ -901,10 +1246,31 @@ function Start-UpgradeSequence {
         }
     }
     
-    # If in batch mode, wait for all upgrades to complete
+    # If in batch mode, wait for all upgrades to complete and unmount ISOs
     if ($BatchMode -and $runningUpgrades.Count -gt 0) {
         Write-Log "Waiting for remaining $($runningUpgrades.Count) upgrades to complete..." -Level Info
-        Wait-ForUpgradeCompletion -RunningUpgrades $runningUpgrades -TimeoutMinutes 180
+        $batchCompleted = Wait-ForUpgradeCompletion -RunningUpgrades $runningUpgrades -TimeoutMinutes 180
+        
+        # Unmount ISOs for all VMs in batch mode
+        Write-Log "Unmounting ISOs from all VMs after batch completion" -Level Info
+        Write-Host "`nUnmounting ISOs from completed VMs..." -ForegroundColor Yellow
+        
+        foreach ($result in $results) {
+            if ($result.UpgradeInitiated -eq $true) {
+                $vm = Get-VM -Name $result.VMName -ErrorAction SilentlyContinue
+                if ($vm) {
+                    $isoUnmounted = Unmount-UpgradeISO -VM $vm
+                    
+                    # Update result with unmount status
+                    $existingResult = $results | Where-Object { $_.VMName -eq $vm.Name } | Select-Object -First 1
+                    if ($existingResult) {
+                        $existingResult.ISOUnmounted = $isoUnmounted
+                    }
+                    
+                    Write-Host "  VM: $($vm.Name) - ISO Unmounted: $isoUnmounted" -ForegroundColor $(if ($isoUnmounted) { "Green" } else { "Red" })
+                }
+            }
+        }
     }
     
     return $results
@@ -953,7 +1319,7 @@ function Wait-ForVMUpgrade {
             try {
                 # Try to establish connection to check status
                 $cred = $credentialStore[$VM.Name]
-                $ipAddress = $currentVM.Guest.IPAddress | Select-Object -First 1
+                $ipAddress = $currentVM.Guest.Hostname | Select-Object -First 1
                 
                 if ($ipAddress) {
                     $testConnection = Test-NetConnection -ComputerName $ipAddress -Port 5985 -WarningAction SilentlyContinue
@@ -1104,7 +1470,7 @@ function Monitor-UpgradeProgress {
         
         # Calculate progress percentage
         if ($result.UpgradePath -ne "None" -and $result.Eligible) {
-            $totalSteps = ($result.UpgradePath -split " → ").Count - 1
+            $totalSteps = ($result.UpgradePath -split " to ").Count - 1
             $completedSteps = if ($result.CompletedSteps) { $result.CompletedSteps.Count } else { 0 }
             
             if ($totalSteps -gt 0) {
@@ -1177,9 +1543,6 @@ $upgradeResults = Start-UpgradeSequence -VirtualMachines $filteredVMs -BatchMode
 $progressTable = Monitor-UpgradeProgress -UpgradeResults $upgradeResults
 Write-Host "`nUpgrade Progress Summary:" -ForegroundColor Cyan
 $progressTable | Format-Table -Property VMName, CurrentOS, Status, ProgressPercentage, ElapsedTime
-
-# Generate final report
-$summary = Generate-UpgradeReport -UpgradeResults $upgradeResults
 
 # Generate report
 $summary = Generate-UpgradeReport -UpgradeResults $upgradeResults
