@@ -1019,7 +1019,7 @@ Write-Log "Script configuration: vCenter=$vCenterServer" -Level Info
 # Get Windows Server VMs that need upgrade
 Write-Log "Searching for Windows Server VMs eligible for upgrade" -Level Info
 #test 1 VM
-$windowsVMs = Get-VM -Name "LCFAIM01 AIM Facilities Workorder Server"
+$windowsVMs = Get-VM -Name "LC1TVM-2016"
 
 # $windowsVMs = Get-VM | Where-Object {
 #     $_.Guest.OSFullName -match "Windows Server (2003|2008|2012|2016|2019)" -and
@@ -1503,7 +1503,7 @@ $confirmation = Read-Host "Ready to proceed with upgrade of $($filteredVMs.Count
 if ($confirmation -ne "Y" -and $confirmation -ne "y") {
     Write-Log "Upgrade cancelled by user" -Level Warning
     # Display cancellation report
-    Generate-UpgradeReport -UpgradeResults @()
+    Generate-UpgradeReport -UpgradeResults @() -ErrorAction SilentlyContinue
     exit
 }
 
