@@ -1,4 +1,8 @@
 #requires -Modules VMware.PowerCLI
+# Windows Server Upgrade Script
+# This script helps upgrade Windows Server 2003, 2008, 2008 R2, 2012, 2012R2, 2016, and 2019 VMs to Windows Server 2022
+# Prerequisites: PowerCLI module, administrative access to vCenter, Windows Server ISOs for intermediate upgrades
+
 # Check if PowerShell is running with elevated privileges
 $currentPrincipal = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
 $isAdmin = $currentPrincipal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
@@ -7,19 +11,13 @@ $isAdmin = $currentPrincipal.IsInRole([Security.Principal.WindowsBuiltInRole]::A
 if (-not $isAdmin) {
     Write-Warning "This script is not running with elevated privileges. Calling the servers to preform Windows Update will fail."
 }
-
-# Windows Server Upgrade Script
-# This script helps upgrade Windows Server 2003, 2008, 2008 R2, 2012, 2012R2, 2016, and 2019 VMs to Windows Server 2022
-# Prerequisites: PowerCLI module, administrative access to vCenter, Windows Server ISOs for intermediate upgrades
 # Import PowerCLI module
 Import-Module VMware.PowerCLI
 
 # Set PowerCLI configuration
 Set-PowerCLIConfiguration -InvalidCertificateAction Ignore -Confirm:$false | Out-Null
 Set-PowerCLIConfiguration -DefaultVIServerMode Multiple -Confirm:$false | Out-Null
-# Windows Server Upgrade Script
-# This script helps upgrade Windows Server 2003, 2008, 2008 R2, 2012, 2012R2, 2016, and 2019 VMs to Windows Server 2022
-# Prerequisites: PowerCLI module, administrative access to vCenter, Windows Server ISOs for intermediate upgrades
+
 
 #region Configuration Parameters
 # Update these parameters as needed
