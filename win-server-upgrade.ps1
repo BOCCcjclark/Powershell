@@ -815,36 +815,7 @@ function Invoke-RemoteUpgrade {
         }
         
         # Now execute specific upgrade steps based on the current OS and target version
-        switch ($UpgradeInfo.CurrentStep) {
-            # Windows Server 2003
-            "2003" {
-                Write-Log "Executing Windows Server 2003 to $($UpgradeInfo.NextStep) upgrade" -Level Info
-                Invoke-Command -Session $session -ScriptBlock {
-                    param($nextVersion)
-                    
-                    Start-Transcript -Path "C:\WindowsUpgrade\Logs\Upgrade_2003_to_${nextVersion}_$(Get-Date -Format 'yyyyMMdd_HHmmss').log"
-                    
-                    Write-Output "Upgrading from Windows Server 2003 to Windows Server $nextVersion"
-                    
-                    # Detect CD drive with the installation media
-                    $cdDrive = Get-WmiObject -Class Win32_CDROMDrive | Select-Object -First 1
-                    $driveLetter = $cdDrive.Drive
-                    
-                    # Special handling for 2003 to 2008 R2 upgrade
-                    Write-Output "Starting Windows Server setup from $driveLetter"
-                    if (Test-Path "$driveLetter\setup.exe") {
-                        Write-Output "Found setup.exe, starting upgrade process..."
-                        Start-Process -FilePath "$driveLetter\setup.exe" -ArgumentList "/unattend: /upgrade" -Wait
-                        Write-Output "Setup initiated. Server will reboot automatically when ready."
-                    }
-                    else {
-                        Write-Error "Setup.exe not found on mounted ISO at $driveLetter"
-                    }
-                    
-                    Stop-Transcript
-                } -ArgumentList $UpgradeInfo.NextStep
-            }
-            
+        switch ($UpgradeInfo.CurrentStep) {            
             # Windows Server 2008/2008 R2
             "2008" {
                 Write-Log "Executing Windows Server 2008/R2 to $($UpgradeInfo.NextStep) upgrade" -Level Info
@@ -861,7 +832,7 @@ function Invoke-RemoteUpgrade {
                     
                     if (Test-Path "$driveLetter\setup.exe") {
                         Write-Output "Found setup.exe on $driveLetter"
-                        Start-Process -FilePath "$driveLetter\setup.exe" -ArgumentList "/quiet /auto upgrade /dynamicupdate disable /migratedrivers all /showoobe none /pkey WMDGN-G9PQG-XVVXX-R3X43-63DFG /imageindex 4 /compat ignorewarning" -Wait
+                        Start-Process -FilePath "$driveLetter\setup.exe" -ArgumentList "/quiet /auto upgrade /dynamicupdate disable /migratedrivers all /showoobe none /imageindex 2 /compat ignorewarning" -Wait
                         Write-Output "Setup initiated. Server will reboot automatically when ready."
                     }
                     else {
@@ -888,7 +859,7 @@ function Invoke-RemoteUpgrade {
                         Write-Output "Starting Windows Server $nextVersion setup..."
                         
                         if ($nextVersion -eq "2019") {
-                            Start-Process -FilePath $setupPath -ArgumentList "/quiet /auto upgrade /dynamicupdate disable /migratedrivers all /showoobe none /pkey WMDGN-G9PQG-XVVXX-R3X43-63DFG /imageindex 4 /compat ignorewarning" -Wait
+                            Start-Process -FilePath $setupPath -ArgumentList "/quiet /auto upgrade /dynamicupdate disable /migratedrivers all /showoobe none /imageindex 2 /compat ignorewarning" -Wait
                         }
                         else {
                             # Standard arguments for other upgrades
@@ -921,7 +892,7 @@ function Invoke-RemoteUpgrade {
                         Write-Output "Starting Windows Server $nextVersion setup..."
                         
                         # Direct upgrade to 2022
-                        Start-Process -FilePath $setupPath -ArgumentList "/quiet /auto upgrade /dynamicupdate disable /migratedrivers all /showoobe none /pkey WMDGN-G9PQG-XVVXX-R3X43-63DFG /imageindex 4 /compat ignorewarning" -Wait
+                        Start-Process -FilePath $setupPath -ArgumentList "/quiet /auto upgrade /dynamicupdate disable /migratedrivers all /showoobe none /imageindex 2 /compat ignorewarning" -Wait
                         Write-Output "Setup initiated, server will reboot when ready"
                     }
                     else {
@@ -948,7 +919,7 @@ function Invoke-RemoteUpgrade {
                         Write-Output "Starting Windows Server $nextVersion setup..."
                         
                         # Direct upgrade to 2022
-                        Start-Process -FilePath $setupPath -ArgumentList "/quiet /auto upgrade /dynamicupdate disable /migratedrivers all /showoobe none /pkey WMDGN-G9PQG-XVVXX-R3X43-63DFG /imageindex 4 /compat ignorewarning" -Wait
+                        Start-Process -FilePath $setupPath -ArgumentList "/quiet /auto upgrade /dynamicupdate disable /migratedrivers all /showoobe none /imageindex 2 /compat ignorewarning" -Wait
                         Write-Output "Setup initiated, server will reboot when ready"
                     }
                     else {
