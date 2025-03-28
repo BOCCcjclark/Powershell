@@ -24,6 +24,8 @@ Set-PowerCLIConfiguration -DefaultVIServerMode Multiple -Confirm:$false | Out-Nu
 #region Configuration Parameters
 # Update these parameters as needed
 $vCenterServer = "lc1pvm-vcenter.lee-county-fl.gov"
+#test 1 VM
+$windowsVMs = Get-VM -Name "LC1TVM-2016"
 
 
 # ISO path patterns for different Windows Server versions
@@ -476,25 +478,38 @@ function Mount-UpgradeISO {
                 AlreadyMounted = $false
             }
         }
+# Check if this exact ISO is already mounted
+if ($isIsoMounted) {
+    if ($currentIsoPath -eq $targetIsoPath) {
+        Write-Host "  The correct ISO is already mounted. No changes needed." -ForegroundColor Green
+        Write-Log "Correct ISO already mounted: $targetIsoName" -Level Info
         
-        # Check if a different ISO is already mounted and handle force option
-        if ($isIsoMounted -and -not $Force) {
-            $message = "A different ISO is already mounted: $currentIsoPath. Use -Force to unmount it."
-            Write-Log $message -Level Warning
-            Write-Host "  WARNING: $message" -ForegroundColor Yellow
+        return @{
+            Success = $true
+            ISOName = $targetIsoName
+            ISOPath = $targetIsoPath
+            Datastore = $Datastore
+            AlreadyMounted = $true
+        }
+    }
+    else {
+        # A different ISO is mounted, unmount it
+        Write-Log "Different ISO is currently mounted. Attempting to unmount." -Level Info
+        $unmountResult = Unmount-UpgradeISO -VM $VM
+        
+        if (-not $unmountResult) {
+            $message = "Failed to unmount existing ISO: $currentIsoPath"
+            Write-Log $message -Level Error
+            Write-Host "  ERROR: $message" -ForegroundColor Red
             $result.ErrorMessage = $message
             $result.MountedPath = $currentIsoPath
             
-            Write-Host "`n==========================" -ForegroundColor Yellow
-            Write-Host " ISO MOUNT OPERATION CANCELLED " -ForegroundColor Yellow
-            Write-Host "==========================`n" -ForegroundColor Yellow
-            
             if ($Detailed) { return $result } else { return $false }
-        } elseif ($isIsoMounted) {
-            $message = "A different ISO is already mounted: $currentIsoPath. Unmounting it automatically."
-            Write-Log $message -Level Warning
-            Write-Host "  NOTE: $message" -ForegroundColor Yellow
         }
+        
+        Write-Log "Successfully unmounted previous ISO" -Level Info
+    }
+}
         
         # Try primary datastore first
         $primaryResult = TryMountIsoFromDatastore -Datastore $PrimaryDatastore -DisplayName "primary"
@@ -1015,25 +1030,12 @@ if (-not (Test-Path -Path $logDir)) {
 
 Write-Log "Starting Windows Server upgrade script" -Level Info
 Write-Log "Script configuration: vCenter=$vCenterServer" -Level Info
-
-# Get Windows Server VMs that need upgrade
-Write-Log "Searching for Windows Server VMs eligible for upgrade" -Level Info
-#test 1 VM
-$windowsVMs = Get-VM -Name "LC1TVM-2016"
-
-# $windowsVMs = Get-VM | Where-Object {
-#     $_.Guest.OSFullName -match "Windows Server (2003|2008|2012|2016|2019)" -and
-#     $_.Guest.OSFullName -notmatch "Windows Server 2022"
-# }
-
 Write-Log "Found $($windowsVMs.Count) Windows Server VMs for potential upgrade" -Level Info
 
 # Initialize results array
 $upgradeResults = @()
 
-# Add new functions for multi-step upgrade process
-
-# First, a new function to handle ISO unmounting
+#Function to handle ISO unmounting
 function Unmount-UpgradeISO {
     [CmdletBinding()]
     param(
@@ -1055,16 +1057,13 @@ function Unmount-UpgradeISO {
         if (-not $cdDrive.IsoPath) {
             Write-Log "ISO successfully unmounted from VM $($VM.Name)" -Level Info
             Write-Host "  ISO successfully unmounted" -ForegroundColor Green
-            return $true
         } else {
             Write-Log "Failed to verify ISO unmount from VM $($VM.Name)" -Level Warning
-            return $false
         }
     }
     catch {
         Write-Log "Error unmounting ISO from VM $($VM.Name): $_" -Level Error
         Write-Host "  ERROR: Failed to unmount ISO: $_" -ForegroundColor Red
-        return $false
     }
 }
 
