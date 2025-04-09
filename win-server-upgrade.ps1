@@ -21,9 +21,8 @@ Set-PowerCLIConfiguration -DefaultVIServerMode Multiple -Confirm:$false | Out-Nu
 
 #region Configuration Parameters
 # Update these parameters as needed
-$vCenterServer = "lc1pvm-vcenter.lee-county-fl.gov"
-#test 1 VM
-$windowsVMs = Get-VM -Name "LC1TVM-2016"
+
+
 
 
 # ISO path patterns for different Windows Server versions
@@ -76,7 +75,7 @@ function Write-Log {
     Add-Content -Path $logFile -Value $logMessage
 }
 
-
+$vCenterServer = "lc1pvm-vcenter.lee-county-fl.gov"
 # Connect to vCenter
 try {
     Write-Log "Connecting to vCenter: $vCenterServer" -Level Info
@@ -87,6 +86,223 @@ catch {
     Write-Log "Failed to connect to vCenter: $_" -Level Error
     exit 1
 }
+
+
+function Get-VMByDNSHostname {
+    [CmdletBinding()]
+    param (
+        [Parameter(Mandatory=$true)]
+        [string]$DNSHostname
+    )
+    
+    Write-Log "Searching for VM with DNS hostname: $DNSHostname" -Level Info
+    
+    try {
+        # Create variants of the hostname to search for (with and without domain)
+        $shortName = $DNSHostname -replace '\..*$', ''
+        
+        # Get all VMs once for better performance - filter out replica and CDP VMs
+        $allVMs = Get-VM | Where-Object { 
+            $_.Name -notlike "*replica*" -and 
+            $_.Name -notlike "*CDP*" 
+        }
+        
+        # First try: exact match on Guest.HostName
+        $vms = $allVMs | Where-Object { 
+            ($_.Guest.HostName -eq $DNSHostname) -or 
+            ($_.Guest.HostName -eq $shortName) 
+        }
+        
+        if ($vms -and ($vms.Count -eq 1)) {
+            Write-Log "Found VM '$($vms.Name)' with exact hostname match: $DNSHostname" -Level Info
+            return $vms
+        } elseif ($vms -and ($vms.Count -gt 1)) {
+            Write-Log "Found multiple VMs with exact hostname match: $DNSHostname. Showing selection menu." -Level Warning
+            return Show-VMSelectionMenu -VMs $vms -Hostname $DNSHostname
+        }
+        
+        # Second try: partial match on Guest.HostName
+        $vms = $allVMs | Where-Object { 
+            ($_.Guest.HostName -like "*$DNSHostname*") -or 
+            ($_.Guest.HostName -like "*$shortName*") 
+        }
+        
+        if ($vms -and ($vms.Count -eq 1)) {
+            Write-Log "Found VM '$($vms.Name)' with partial hostname match: $DNSHostname" -Level Info
+            return $vms
+        } elseif ($vms -and ($vms.Count -gt 1)) {
+            Write-Log "Found multiple VMs with partial hostname match: $DNSHostname. Showing selection menu." -Level Warning
+            return Show-VMSelectionMenu -VMs $vms -Hostname $DNSHostname
+        }
+        
+        # Third try: check if the display name contains the hostname
+        $vms = $allVMs | Where-Object { 
+            ($_.Name -eq $DNSHostname) -or 
+            ($_.Name -eq $shortName) -or
+            ($_.Name -like "*$DNSHostname*") -or 
+            ($_.Name -like "*$shortName*") 
+        }
+        
+        if ($vms -and ($vms.Count -eq 1)) {
+            Write-Log "Found VM '$($vms.Name)' with name matching pattern: $DNSHostname" -Level Info
+            return $vms
+        } elseif ($vms -and ($vms.Count -gt 1)) {
+            Write-Log "Found multiple VMs with partial name match: $DNSHostname. Showing selection menu." -Level Warning
+            return Show-VMSelectionMenu -VMs $vms -Hostname $DNSHostname
+        }
+        
+        Write-Log "No VM found with DNS hostname: $DNSHostname" -Level Warning
+        return $null
+    }
+    catch {
+        Write-Log "Error searching for VM with DNS hostname $DNSHostname`: $_" -Level Error
+        return $null
+    }
+}
+
+function Show-VMSelectionMenu {
+    [CmdletBinding()]
+    param (
+        [Parameter(Mandatory=$true)]
+        [array]$VMs,
+        
+        [Parameter(Mandatory=$true)]
+        [string]$Hostname
+    )
+    
+    Write-Host "`nMultiple VMs found matching hostname: $Hostname" -ForegroundColor Yellow
+    Write-Host "Please select the correct VM:" -ForegroundColor Yellow
+    
+    for ($i = 0; $i -lt $VMs.Count; $i++) {
+        Write-Host "[$($i+1)] $($VMs[$i].Name) - Guest OS: $($VMs[$i].Guest.OSFullName) - Hostname: $($VMs[$i].Guest.HostName)" -ForegroundColor Cyan
+    }
+    
+    Write-Host "[0] None of these - skip this hostname" -ForegroundColor Red
+    
+    do {
+        $selection = Read-Host "Enter selection (0-$($VMs.Count))"
+        $validSelection = $selection -match '^\d+$' -and [int]$selection -ge 0 -and [int]$selection -le $VMs.Count
+        
+        if (-not $validSelection) {
+            Write-Host "Invalid selection. Please enter a number between 0 and $($VMs.Count)" -ForegroundColor Red
+        }
+    } while (-not $validSelection)
+    
+    $selection = [int]$selection
+    
+    if ($selection -eq 0) {
+        Write-Log "User chose to skip VM with hostname: $Hostname" -Level Warning
+        return $null
+    } else {
+        $selectedVM = $VMs[$selection-1]
+        Write-Log "User selected VM: $($selectedVM.Name) for hostname: $Hostname" -Level Info
+        return $selectedVM
+    }
+}
+
+function Get-TargetVMsList {
+    [CmdletBinding()]
+    param()
+    
+    $vms = @()
+    $method = Read-Host "How would you like to specify VMs to upgrade?`n[1] Enter DNS hostnames manually`n[2] Import from a text file`nEnter choice (1 or 2)"
+    
+    if ($method -eq "1") {
+        # Manual entry
+        Write-Host "Enter DNS hostnames of VMs to upgrade (one per line, enter blank line when done):" -ForegroundColor Cyan
+        do {
+            $hostname = Read-Host "DNS Hostname"
+            if ($hostname) {
+                $vm = Get-VMByDNSHostname -DNSHostname $hostname
+                if ($vm) {
+                    # Additional check to filter out replica and CDP VMs (as a safety)
+                    if ($vm.Name -notlike "*replica*" -and $vm.Name -notlike "*CDP*") {
+                        $vms += $vm
+                        Write-Host "Added VM: $($vm.Name) with DNS hostname: $hostname" -ForegroundColor Green
+                    } else {
+                        Write-Host "Skipped VM: $($vm.Name) as it appears to be a replica or CDP VM" -ForegroundColor Yellow
+                        Write-Log "Skipped replica or CDP VM: $($vm.Name) with hostname: $hostname" -Level Warning
+                    }
+                }
+            }
+        } while ($hostname)
+    }
+    elseif ($method -eq "2") {
+        # Import from file
+        $filePath = Read-Host "Enter the full path to the text file containing DNS hostnames (one per line)"
+        if (Test-Path -Path $filePath) {
+            $hostnames = Get-Content -Path $filePath | Where-Object { $_ -match '\S' }  # Skip empty lines
+            Write-Host "Found $($hostnames.Count) hostnames in file" -ForegroundColor Cyan
+            
+            foreach ($hostname in $hostnames) {
+                Write-Host "Processing hostname: $hostname" -ForegroundColor Gray
+                $vm = Get-VMByDNSHostname -DNSHostname $hostname
+                if ($vm) {
+                    # Additional check to filter out replica and CDP VMs
+                    if ($vm.Name -notlike "*replica*" -and $vm.Name -notlike "*CDP*") {
+                        $vms += $vm
+                        Write-Host "Added VM: $($vm.Name) with DNS hostname: $hostname" -ForegroundColor Green
+                    } else {
+                        Write-Host "Skipped VM: $($vm.Name) as it appears to be a replica or CDP VM" -ForegroundColor Yellow
+                        Write-Log "Skipped replica or CDP VM: $($vm.Name) with hostname: $hostname" -Level Warning
+                    }
+                }
+            }
+        }
+        else {
+            Write-Host "File not found: $filePath" -ForegroundColor Red
+        }
+    }
+    else {
+        Write-Host "Invalid choice. Defaulting to manual entry." -ForegroundColor Yellow
+        return Get-TargetVMsList
+    }
+    
+    # Check if any VMs were found
+    if ($vms.Count -eq 0) {
+        Write-Host "No VMs found with the provided DNS hostnames." -ForegroundColor Red
+        $retry = Read-Host "Would you like to try again? (Y/N)"
+        if ($retry -eq "Y" -or $retry -eq "y") {
+            return Get-TargetVMsList
+        }
+        else {
+            return $null
+        }
+    }
+    
+    # Display summary of VMs found
+    Write-Host "`nFound $($vms.Count) VMs for upgrade:" -ForegroundColor Green
+    $vms | ForEach-Object {
+        Write-Host "  - $($_.Name) - Guest OS: $($_.Guest.OSFullName) - Hostname: $($_.Guest.HostName)" -ForegroundColor Cyan
+    }
+    
+    # Confirm with user
+    $confirm = Read-Host "Do you want to proceed with these VMs? (Y/N)"
+    if ($confirm -eq "Y" -or $confirm -eq "y") {
+        return $vms
+    }
+    else {
+        Write-Host "VM selection cancelled." -ForegroundColor Yellow
+        $retry = Read-Host "Would you like to try again? (Y/N)"
+        if ($retry -eq "Y" -or $retry -eq "y") {
+            return Get-TargetVMsList
+        }
+        else {
+            return $null
+        }
+    }
+}
+
+$windowsVMs = Get-TargetVMsList
+
+if (-not $windowsVMs -or $windowsVMs.Count -eq 0) {
+    Write-Log "No VMs selected for upgrade. Exiting script." -Level Warning
+    Disconnect-VIServer -Server $vCenterServer -Confirm:$false -ErrorAction SilentlyContinue
+    exit
+}
+
+Write-Log "Found $($windowsVMs.Count) Windows Server VMs for potential upgrade" -Level Info
+Write-Host "Note: VMs with 'replica' or 'CDP' in their names were automatically excluded from selection" -ForegroundColor Yellow
 
 function Test-VMUpgradeEligibility {
     param (
