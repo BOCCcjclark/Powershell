@@ -431,7 +431,7 @@ function Test-VMUpgradeEligibility {
             UpgradeSteps = @("2019", "2022")
             RequiredISOs = @("2019", "2022")
             CurrentStep = "2012"
-            NextStep = "2012"
+            NextStep = "2019"
         }
     }
     # Windows Server 2012 R2
